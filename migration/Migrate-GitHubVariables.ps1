@@ -1,91 +1,115 @@
 param(
     [Parameter(Mandatory)] [string]$SourceOrg,
-    [string]$SourceRepo,
-    [Parameter()] [string]$TargetOrg,
-    [string]$TargetRepo,
+    [Parameter(Mandatory)] [string]$SourceRepo,
+    [Parameter(Mandatory)] [string]$TargetOrg,
+    [Parameter(Mandatory)] [string]$TargetRepo,
     [Parameter(Mandatory)] [string]$SourcePAT,
     [Parameter(Mandatory)] [string]$TargetPAT,
-    [string]$Scope = "repo,env,codespaces,dependabot",
+    [ValidateSet("secrets", "variables", "all")] [string]$Scope = "all",
     [switch]$Force,
     [switch]$DryRun
 )
 
-# Validate parameters
-if (-not $TargetOrg -and -not $TargetRepo) {
-    Write-Error "Specify either -TargetOrg (for org migration) or -TargetRepo (same org migration)."
-    exit 1
-}
-
-# Configure GH CLI contexts
-function Set-GhContext {
-    param($PAT)
-    gh auth logout -h github.com -q
-    $PAT | gh auth login --with-token
-}
-
-# Fetch list of repos
-function Get-Repos {
-    param($Org)
-    gh repo list $Org --limit 1000 --json name -q '.[].name'
-}
-
-# Fetch items by type
-function Get-Items {
-    param($Org, $Repo, $Type)
-    switch ($Type) {
-        'repo'        { gh variable list --repo "$Org/$Repo" --json name -q '.[].name' }
-        'env'         { gh environment list --repo "$Org/$Repo" --json name -q '.[].name' }
-        'codespaces'  { gh codespace variable list --repo "$Org/$Repo" --json name -q '.[].name' }
-        'dependabot'  { gh dependabot variable list --repo "$Org/$Repo" --json name -q '.[].name' }
-        'secrets'     { gh secret list --repo "$Org/$Repo" --json name -q '.[].name' }
-    }
-}
-
-# Copy single item
-function Copy-Item {
-    param($Type, $SourceOrg, $SourceRepo, $Name, $TargetOrg, $TargetRepo)
-    $dest = if ($TargetRepo) {"$TargetOrg/$TargetRepo"} else {$TargetOrg}
-    $cmd = switch ($Type) {
-        'repo'        {"gh variable set $Name --repo $dest --body ''"}
-        'env'         {"gh environment variable set $Name --repo $dest --body ''"}
-        'codespaces'  {"gh codespace variable set $Name --repo $dest --body ''"}
-        'dependabot'  {"gh dependabot variable set $Name --repo $dest --body ''"}
-        'secrets'     {"gh secret set $Name --repo $dest --body ''"}
-    }
-    if ($DryRun) {
-        Write-Host "[DryRun] $cmd"
+function Invoke-GitHubApi {
+    param (
+        [string]$Method,
+        [string]$Uri,
+        [string]$Token,
+        $Body = $null
+    )
+    $headers = @{ Authorization = "Bearer $Token"; Accept = "application/vnd.github+json" }
+    if ($Body) {
+        $jsonBody = $Body | ConvertTo-Json -Depth 10
+        Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers -Body $jsonBody -ContentType "application/json"
     } else {
-        Invoke-Expression $cmd
+        Invoke-RestMethod -Method $Method -Uri $Uri -Headers $headers
     }
 }
 
-# Main migration
-Set-GhContext $SourcePAT
-$sourceRepos = if ($SourceRepo) { @($SourceRepo) } else { Get-Repos -Org $SourceOrg }
+function Migrate-Secrets {
+    Write-Host "`n== Migrating SECRETS =="
+    $sourceUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/actions/secrets"
+    $targetUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/actions/secrets"
 
-Set-GhContext $TargetPAT
-$targetRepos = if ($TargetRepo) { @($TargetRepo) } else { Get-Repos -Org $TargetOrg }
+    $sourceSecrets = Invoke-GitHubApi -Method GET -Uri $sourceUri -Token $SourcePAT
 
-foreach ($repo in $sourceRepos) {
-    if ($SourceRepo -and -not $targetRepos.Contains($TargetRepo)) {
-        Write-Warning "Target repo $TargetRepo does not exist in $TargetOrg. Skipping."
-        continue
-    }
-    if ($SourceRepo -eq $null -and -not $targetRepos.Contains($repo)) {
-        Write-Warning "Repo $repo missing in target. Skipping."
-        continue
-    }
-    $destRepo = $TargetRepo ? $TargetRepo : $repo
-    foreach ($type in $Scope.Split(',')) {
-        $items = Get-Items -Org $SourceOrg -Repo $repo -Type $type
-        foreach ($name in $items) {
-            $exists = Get-Items -Org $TargetOrg -Repo $destRepo -Type $type | Where-Object { $_ -eq $name }
-            if ($exists -and -not $Force) {
-                Write-Host "$type '$name' exists in $destRepo. Skipping."
+    foreach ($secret in $sourceSecrets.secrets) {
+        $name = $secret.name
+        $checkUri = "$targetUri/$name"
+        try {
+            Invoke-GitHubApi -Method GET -Uri $checkUri -Token $TargetPAT | Out-Null
+            if (-not $Force) {
+                Write-Host "Secret '$name' already exists in target. Skipping."
                 continue
             }
-            Copy-Item -Type $type -SourceOrg $SourceOrg -SourceRepo $repo -Name $name -TargetOrg $TargetOrg -TargetRepo $destRepo
-            Write-Host "Copied $type '$name' to $TargetOrg/$destRepo"
+        } catch {}
+
+        if ($DryRun) {
+            Write-Host "[DryRun] Would copy secret '$name'"
+        } else {
+            Write-Host "Copying secret '$name'"
+
+            # Get public key for target
+            $keyInfo = Invoke-GitHubApi -Method GET -Uri "$targetUri/public-key" -Token $TargetPAT
+            $keyId = $keyInfo.key_id
+            $key = $keyInfo.key
+
+            # Get value from source (not possible via GitHub API)
+            Write-Warning "Secret '$name' cannot be read from source – skipping (GitHub limitation)."
+            continue
+
+            # Uncomment below if you get value by another means
+            # $value = "secret_value_here"
+            # $bytes = [System.Text.Encoding]::UTF8.GetBytes($value)
+            # $keyBytes = [Convert]::FromBase64String($key)
+            # $encryptedBytes = ... # encrypt with LibSodium
+            # $encryptedValue = [Convert]::ToBase64String($encryptedBytes)
+
+            # Invoke-GitHubApi -Method PUT -Uri "$targetUri/$name" -Token $TargetPAT -Body @{
+            #     encrypted_value = $encryptedValue
+            #     key_id = $keyId
+            # }
         }
     }
+}
+
+function Migrate-Variables {
+    Write-Host "`n== Migrating VARIABLES =="
+    $sourceUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/actions/variables"
+    $targetUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/actions/variables"
+
+    $sourceVars = Invoke-GitHubApi -Method GET -Uri $sourceUri -Token $SourcePAT
+
+    foreach ($var in $sourceVars.variables) {
+        $name = $var.name
+        $value = $var.value
+
+        $checkUri = "$targetUri/$name"
+        $exists = $false
+        try {
+            Invoke-GitHubApi -Method GET -Uri $checkUri -Token $TargetPAT | Out-Null
+            $exists = $true
+        } catch {}
+
+        if ($exists -and -not $Force) {
+            Write-Host "Variable '$name' already exists in target. Skipping."
+            continue
+        }
+
+        if ($DryRun) {
+            Write-Host "[DryRun] Would copy variable '$name' = '$value'"
+        } else {
+            Write-Host "Copying variable '$name'"
+            $body = @{ name = $name; value = $value }
+            Invoke-GitHubApi -Method PUT -Uri "$targetUri/$name" -Token $TargetPAT -Body $body
+        }
+    }
+}
+
+# Entry
+if ($Scope -eq "all" -or $Scope -eq "secrets") {
+    Migrate-Secrets
+}
+if ($Scope -eq "all" -or $Scope -eq "variables") {
+    Migrate-Variables
 }
