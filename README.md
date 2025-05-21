@@ -40,3 +40,41 @@ This PowerShell script automates the migration of **GitHub Actions repository se
     -SourcePAT "${{ secrets.SOURCE_PAT }}" \
     -TargetPAT "${{ secrets.TARGET_PAT }}" \
     -Scope "actions"  # Currently only "actions" scope (GitHub Actions secrets) is supported
+
+
+## Setup — Fine-Grained Personal Access Tokens (FG PATs) and Permissions
+
+GitHub now recommends using **Fine-Grained Personal Access Tokens (FG PATs)**, which allow for more precise permission control compared to classic tokens.
+
+### How to create a Fine-Grained PAT
+
+1. Go to: https://github.com/settings/tokens
+2. Click **Generate new token** → **Fine-grained token**
+3. Set **Repository access** to **Only select repositories**
+   - Add the appropriate repositories (source repo for `SOURCE_PAT` and target repo for `TARGET_PAT`)
+4. Under **Permissions**, assign the following permissions:
+
+| For `SOURCE_PAT` (read access)            | For `TARGET_PAT` (write access)               |
+|-------------------------------------------|-----------------------------------------------|
+| **Repository permissions**                 | **Repository permissions**                     |
+| - Actions secrets: Read                    | - Actions secrets: Write                       |
+| - Contents: Read (may be required)        | - Contents: Read (may be required)             |
+
+> **Note:** If your repositories are private or use environments or other features, adjust permissions accordingly.
+
+5. Generate the token and **copy it immediately** — you will not be able to see it again.
+
+### Where to set FG PATs
+
+Store the tokens as **Secrets** in the repository that runs the workflow:
+
+- `SOURCE_PAT` — with token granting access to the source repository
+- `TARGET_PAT` — with token granting access to the target repository
+
+### How the workflow uses these tokens
+
+The workflow sets the environment variable `GH_TOKEN` to `TARGET_PAT` to enable writing secrets to the target repository:
+
+```yaml
+env:
+  GH_TOKEN: ${{ secrets.TARGET_PAT }}
