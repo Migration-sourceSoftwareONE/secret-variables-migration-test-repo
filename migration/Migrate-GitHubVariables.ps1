@@ -5,7 +5,7 @@ param(
     [Parameter(Mandatory)] [string]$TargetRepo,
     [Parameter(Mandatory)] [string]$SourcePAT,
     [Parameter(Mandatory)] [string]$TargetPAT,
-    [string]$Scope = "actionsreposecrets",
+    [string]$Scope = "actionreposecrets,dependabotreposecrets,codespacesreposecrets",
     [switch]$Force
 )
 
@@ -31,7 +31,12 @@ function Invoke-GitHubApi {
 }
 
 function Migrate-ActionsRepoSecrets {
-    param($SourceOrg, $SourceRepo, $TargetOrg, $TargetRepo, $SourcePAT, $TargetPAT, $Force)
+    param(
+        [string]$SourceOrg, [string]$SourceRepo,
+        [string]$TargetOrg, [string]$TargetRepo,
+        [string]$SourcePAT, [string]$TargetPAT,
+        [switch]$Force
+    )
 
     Write-Host "== Migrating ACTIONS REPOSITORY SECRETS =="
 
@@ -40,13 +45,14 @@ function Migrate-ActionsRepoSecrets {
 
     $sourceSecrets = Invoke-GitHubApi -Method GET -Uri $sourceUri -Token $SourcePAT
     if (-not $sourceSecrets) {
-        Write-Warning "Failed to fetch source actions secrets."
+        Write-Warning "Failed to fetch secrets from source repo."
         return
     }
 
     foreach ($secret in $sourceSecrets.secrets) {
         $name = $secret.name
-        # Check if secret exists on target
+
+        # Check if secret exists in target
         $exists = $false
         $check = Invoke-GitHubApi -Method GET -Uri "$targetUri/$name" -Token $TargetPAT
         if ($check) { $exists = $true }
@@ -56,54 +62,23 @@ function Migrate-ActionsRepoSecrets {
             continue
         }
 
-        Write-Host "Copying secret '$name' with empty placeholder..."
+        Write-Host "Copying secret '$name' with empty placeholder value..."
 
         $repoFullName = "$TargetOrg/$TargetRepo"
-        $setSecretCmd = "gh secret set $name --repo $repoFullName --body ''"
-        Invoke-Expression $setSecretCmd
-    }
-}
 
-function Migrate-ActionsRepoVariables {
-    param($SourceOrg, $SourceRepo, $TargetOrg, $TargetRepo, $SourcePAT, $TargetPAT, $Force)
-
-    Write-Host "== Migrating ACTIONS REPOSITORY VARIABLES =="
-
-    $sourceUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/actions/variables"
-    $targetUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/actions/variables"
-
-    $sourceVars = Invoke-GitHubApi -Method GET -Uri $sourceUri -Token $SourcePAT
-    if (-not $sourceVars) {
-        Write-Warning "Failed to fetch source actions variables."
-        return
-    }
-
-    $targetVars = Invoke-GitHubApi -Method GET -Uri $targetUri -Token $TargetPAT
-
-    foreach ($variable in $sourceVars.variables) {
-        $name = $variable.name
-        $value = $variable.value
-
-        # Check if variable exists on target
-        $exists = $false
-        if ($targetVars.variables | Where-Object { $_.name -eq $name }) {
-            $exists = $true
-        }
-
-        if ($exists -and -not $Force) {
-            Write-Host "Variable '$name' already exists on target. Skipping."
-            continue
-        }
-
-        Write-Host "Copying variable '$name'..."
-
-        $body = @{ name = $name; value = $value }
-        Invoke-GitHubApi -Method PUT -Uri "$targetUri/$name" -Token $TargetPAT -Body $body
+        # Note: value cannot be retrieved, so empty placeholder is used
+        $cmd = "gh secret set $name --repo $repoFullName --body ''"
+        Invoke-Expression $cmd
     }
 }
 
 function Migrate-DependabotRepoSecrets {
-    param($SourceOrg, $SourceRepo, $TargetOrg, $TargetRepo, $SourcePAT, $TargetPAT, $Force)
+    param(
+        [string]$SourceOrg, [string]$SourceRepo,
+        [string]$TargetOrg, [string]$TargetRepo,
+        [string]$SourcePAT, [string]$TargetPAT,
+        [switch]$Force
+    )
 
     Write-Host "== Migrating DEPENDABOT REPOSITORY SECRETS =="
 
@@ -112,32 +87,39 @@ function Migrate-DependabotRepoSecrets {
 
     $sourceSecrets = Invoke-GitHubApi -Method GET -Uri $sourceUri -Token $SourcePAT
     if (-not $sourceSecrets) {
-        Write-Warning "Failed to fetch source dependabot secrets."
+        Write-Warning "Failed to fetch dependabot secrets from source repo or none exist."
         return
     }
 
     foreach ($secret in $sourceSecrets.secrets) {
         $name = $secret.name
-        # Check if secret exists on target
+
+        # Check if secret exists in target
         $exists = $false
         $check = Invoke-GitHubApi -Method GET -Uri "$targetUri/$name" -Token $TargetPAT
         if ($check) { $exists = $true }
 
         if ($exists -and -not $Force) {
-            Write-Host "Secret '$name' already exists on target. Skipping."
+            Write-Host "Dependabot secret '$name' already exists on target. Skipping."
             continue
         }
 
-        Write-Host "Copying dependabot secret '$name' with empty placeholder..."
+        Write-Host "Copying dependabot secret '$name' with empty placeholder value..."
 
         $repoFullName = "$TargetOrg/$TargetRepo"
-        $setSecretCmd = "gh secret set $name --repo $repoFullName --body '' --visibility repository --app dependabot"
-        Invoke-Expression $setSecretCmd
+
+        $cmd = "gh secret set $name --repo $repoFullName --app dependabot --body ''"
+        Invoke-Expression $cmd
     }
 }
 
 function Migrate-CodespacesRepoSecrets {
-    param($SourceOrg, $SourceRepo, $TargetOrg, $TargetRepo, $SourcePAT, $TargetPAT, $Force)
+    param(
+        [string]$SourceOrg, [string]$SourceRepo,
+        [string]$TargetOrg, [string]$TargetRepo,
+        [string]$SourcePAT, [string]$TargetPAT,
+        [switch]$Force
+    )
 
     Write-Host "== Migrating CODESPACES REPOSITORY SECRETS =="
 
@@ -146,38 +128,42 @@ function Migrate-CodespacesRepoSecrets {
 
     $sourceSecrets = Invoke-GitHubApi -Method GET -Uri $sourceUri -Token $SourcePAT
     if (-not $sourceSecrets) {
-        Write-Warning "Failed to fetch source codespaces secrets."
+        Write-Warning "Failed to fetch codespaces secrets from source repo or none exist."
         return
     }
 
     foreach ($secret in $sourceSecrets.secrets) {
         $name = $secret.name
-        # Check if secret exists on target
+
+        # Check if secret exists in target
         $exists = $false
         $check = Invoke-GitHubApi -Method GET -Uri "$targetUri/$name" -Token $TargetPAT
         if ($check) { $exists = $true }
 
         if ($exists -and -not $Force) {
-            Write-Host "Secret '$name' already exists on target. Skipping."
+            Write-Host "Codespaces secret '$name' already exists on target. Skipping."
             continue
         }
 
-        Write-Host "Copying codespaces secret '$name' with empty placeholder..."
+        Write-Host "Copying codespaces secret '$name' with empty placeholder value..."
 
         $repoFullName = "$TargetOrg/$TargetRepo"
-        $setSecretCmd = "gh secret set $name --repo $repoFullName --body '' --visibility repository --app codespaces"
-        Invoke-Expression $setSecretCmd
+
+        $cmd = "gh secret set $name --repo $repoFullName --app codespaces --body ''"
+        Invoke-Expression $cmd
     }
 }
 
-# Main scope dispatch
+# Repository Variables migration is skipped due to lack of public API
+function Migrate-RepoVariables {
+    Write-Warning "Repository variables migration is not supported by the GitHub API and will be skipped."
+}
+
+# Main logic depending on Scope input (comma-separated list)
 foreach ($type in $Scope.Split(',')) {
     switch ($type.Trim().ToLower()) {
-        'actionsreposecrets' {
+        'actionreposecrets' {
             Migrate-ActionsRepoSecrets -SourceOrg $SourceOrg -SourceRepo $SourceRepo -TargetOrg $TargetOrg -TargetRepo $TargetRepo -SourcePAT $SourcePAT -TargetPAT $TargetPAT -Force:$Force
-        }
-        'actionsrepovariables' {
-            Migrate-ActionsRepoVariables -SourceOrg $SourceOrg -SourceRepo $SourceRepo -TargetOrg $TargetOrg -TargetRepo $TargetRepo -SourcePAT $SourcePAT -TargetPAT $TargetPAT -Force:$Force
         }
         'dependabotreposecrets' {
             Migrate-DependabotRepoSecrets -SourceOrg $SourceOrg -SourceRepo $SourceRepo -TargetOrg $TargetOrg -TargetRepo $TargetRepo -SourcePAT $SourcePAT -TargetPAT $TargetPAT -Force:$Force
@@ -185,8 +171,11 @@ foreach ($type in $Scope.Split(',')) {
         'codespacesreposecrets' {
             Migrate-CodespacesRepoSecrets -SourceOrg $SourceOrg -SourceRepo $SourceRepo -TargetOrg $TargetOrg -TargetRepo $TargetRepo -SourcePAT $SourcePAT -TargetPAT $TargetPAT -Force:$Force
         }
+        'actionrepovariables' {
+            Migrate-RepoVariables
+        }
         default {
-            Write-Warning "Unknown scope type: $type"
+            Write-Warning "Migration type '$type' is not implemented."
         }
     }
 }
