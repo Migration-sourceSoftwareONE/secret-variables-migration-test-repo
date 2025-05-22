@@ -16,11 +16,20 @@ function Invoke-GitHubApi {
     try {
         Invoke-RestMethod -Method $Method -Uri $Uri -Headers $Headers -ContentType "application/json" -Body $BodyJson
     } catch {
-        # Suppress 404 for existence checks; warn otherwise
         if ($_.Exception.Response.StatusCode.value__ -ne 404) {
             Write-Warning "API call failed: $($_.Exception.Message) [$Method $Uri]"
         }
         return $null
+    }
+}
+
+function Ensure-EnvironmentExists {
+    param($RepoOrg, $RepoName, $Token, $EnvName)
+    $checkUri = "https://api.github.com/repos/$RepoOrg/$RepoName/environments/$EnvName"
+    $check = Invoke-GitHubApi GET $checkUri $Token
+    if (-not $check) {
+        Write-Host "  Creating environment $EnvName"
+        Invoke-GitHubApi PUT $checkUri $Token @{ wait_timer = 0 }
     }
 }
 
@@ -86,46 +95,36 @@ function Migrate-CodespacesRepoSecrets {
 
 function Migrate-ActionsEnvSecrets {
     Write-Host "== Migrating ACTIONS ENVIRONMENT SECRETS =="
-    $repoInfo = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo" $SourcePAT
-    if (-not $repoInfo) { return }
-    $repoId = $repoInfo.id
     $envs = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments" $SourcePAT
+    if (-not $envs) { return }
     foreach ($env in $envs.environments) {
         $e = $env.name
         Write-Host " Environment: $e"
-        $sUri = "https://api.github.com/repositories/$repoId/environments/$e/secrets"
-        $tUri = "https://api.github.com/repositories/$repoId/environments/$e/secrets"
-        $src = Invoke-GitHubApi GET $sUri $SourcePAT
+        Ensure-EnvironmentExists -RepoOrg $TargetOrg -RepoName $TargetRepo -Token $TargetPAT -EnvName $e
+        $src = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/secrets" $SourcePAT
         if (-not $src) { continue }
         foreach ($sec in $src.secrets) {
             $n = $sec.name
-            $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
-            if ($exists -and -not $Force) { Write-Host "  Skipping existing env secret $n"; continue }
             Write-Host "  Copying env secret $n"
-            gh secret set $n --repo "$TargetOrg/$TargetRepo" --env $e --body ''
+            gh secret set $n --repo "$TargetOrg/$TargetRepo" --env "$e" --body ''
         }
     }
 }
 
 function Migrate-ActionsEnvVariables {
     Write-Host "== Migrating ACTIONS ENVIRONMENT VARIABLES =="
-    $repoInfo = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo" $SourcePAT
-    if (-not $repoInfo) { return }
-    $repoId = $repoInfo.id
     $envs = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments" $SourcePAT
+    if (-not $envs) { return }
     foreach ($env in $envs.environments) {
         $e = $env.name
         Write-Host " Environment: $e"
-        $sUri = "https://api.github.com/repositories/$repoId/environments/$e/variables"
-        $tUri = "https://api.github.com/repositories/$repoId/environments/$e/variables"
-        $src = Invoke-GitHubApi GET $sUri $SourcePAT
+        Ensure-EnvironmentExists -RepoOrg $TargetOrg -RepoName $TargetRepo -Token $TargetPAT -EnvName $e
+        $src = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/variables" $SourcePAT
         if (-not $src) { continue }
         foreach ($var in $src.variables) {
             $n = $var.name
-            $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
-            if ($exists -and -not $Force) { Write-Host "  Skipping existing env var $n"; continue }
             Write-Host "  Copying env var $n"
-            gh variable set $n --repo "$TargetOrg/$TargetRepo" --env $e --body ''
+            gh variable set $n --repo "$TargetOrg/$TargetRepo" --env "$e" --body ''
         }
     }
 }
