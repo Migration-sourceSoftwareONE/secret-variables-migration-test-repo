@@ -93,8 +93,8 @@ function Migrate-ActionsEnvSecrets {
     foreach ($env in $envs.environments) {
         $e = $env.name
         Write-Host " Environment: $e"
-        $sUri = "https://api.github.com/repositories/$repoId/environments/$e/secrets"
-        $tUri = "https://api.github.com/repositories/$repoId/environments/$e/secrets"
+        $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/secrets"
++       $tUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e/secrets"
         $src = Invoke-GitHubApi GET $sUri $SourcePAT
         if (-not $src) { continue }
         foreach ($sec in $src.secrets) {
@@ -116,8 +116,8 @@ function Migrate-ActionsEnvVariables {
     foreach ($env in $envs.environments) {
         $e = $env.name
         Write-Host " Environment: $e"
-        $sUri = "https://api.github.com/repositories/$repoId/environments/$e/variables"
-        $tUri = "https://api.github.com/repositories/$repoId/environments/$e/variables"
+        $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/variables"
++       $tUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e/variables"
         $src = Invoke-GitHubApi GET $sUri $SourcePAT
         if (-not $src) { continue }
         foreach ($var in $src.variables) {
