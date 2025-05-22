@@ -156,7 +156,7 @@ function Migrate-ActionsOrgVariables {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-action variable $n"; continue }
         Write-Host "Copying org-action variable $n"
-        gh variable set $n --org "$TargetOrg" --body ''
+        gh variable set $n --org "$TargetOrg" --body 'PLACEHOLDER_VALUE'
     }
 }
 
