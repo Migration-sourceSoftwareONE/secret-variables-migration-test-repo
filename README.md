@@ -8,7 +8,7 @@ This repository contains a PowerShell script and GitHub Actions workflow to migr
 
 - Migrates **GitHub Actions secrets** by name (only the secret names are copied).
 - **Secret values are NOT transferred** due to GitHub API limitations.
-- Currently supports migrating only **Actions secrets** (`actions` scope).
+- Currently supports migrating only **Actions secrets**, **Dependabot secrets** and *8Codespaces secrets** at repository leevel (`organization` scope not supoorted).
 - Designed to be run as a GitHub Actions workflow or locally with PowerShell.
 - Supports migrating between repositories in different organizations.
 
