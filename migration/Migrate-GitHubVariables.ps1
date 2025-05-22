@@ -6,8 +6,7 @@ param(
     [Parameter(Mandatory)] [string]$SourcePAT,
     [Parameter(Mandatory)] [string]$TargetPAT,
     [string]$Scope = "actionsreposecrets",
-    [switch]$Force,
-    [switch]$DryRun
+    [switch]$Force
 )
 
 function Invoke-GitHubApi {
@@ -32,7 +31,7 @@ function Invoke-GitHubApi {
 }
 
 function Migrate-ActionsRepoSecrets {
-    param($SourceOrg, $SourceRepo, $TargetOrg, $TargetRepo, $SourcePAT, $TargetPAT, $Force, $DryRun)
+    param($SourceOrg, $SourceRepo, $TargetOrg, $TargetRepo, $SourcePAT, $TargetPAT, $Force)
 
     Write-Host "== Migrating ACTIONS REPOSITORY SECRETS =="
 
@@ -44,14 +43,6 @@ function Migrate-ActionsRepoSecrets {
         Write-Warning "Failed to fetch source actions secrets."
         return
     }
-
-    $targetKeyInfo = Invoke-GitHubApi -Method GET -Uri "$targetUri/public-key" -Token $TargetPAT
-    if (-not $targetKeyInfo) {
-        Write-Warning "Failed to get target repo public key."
-        return
-    }
-    $keyId = $targetKeyInfo.key_id
-    $publicKey = $targetKeyInfo.key
 
     foreach ($secret in $sourceSecrets.secrets) {
         $name = $secret.name
@@ -65,11 +56,6 @@ function Migrate-ActionsRepoSecrets {
             continue
         }
 
-        if ($DryRun) {
-            Write-Host "[DryRun] Would copy secret '$name' with empty value."
-            continue
-        }
-
         Write-Host "Copying secret '$name' with empty placeholder..."
 
         $repoFullName = "$TargetOrg/$TargetRepo"
@@ -79,7 +65,7 @@ function Migrate-ActionsRepoSecrets {
 }
 
 function Migrate-ActionsRepoVariables {
-    param($SourceOrg, $SourceRepo, $TargetOrg, $TargetRepo, $SourcePAT, $TargetPAT, $Force, $DryRun)
+    param($SourceOrg, $SourceRepo, $TargetOrg, $TargetRepo, $SourcePAT, $TargetPAT, $Force)
 
     Write-Host "== Migrating ACTIONS REPOSITORY VARIABLES =="
 
@@ -92,24 +78,20 @@ function Migrate-ActionsRepoVariables {
         return
     }
 
+    $targetVars = Invoke-GitHubApi -Method GET -Uri $targetUri -Token $TargetPAT
+
     foreach ($variable in $sourceVars.variables) {
         $name = $variable.name
         $value = $variable.value
 
         # Check if variable exists on target
         $exists = $false
-        $targetVars = Invoke-GitHubApi -Method GET -Uri $targetUri -Token $TargetPAT
         if ($targetVars.variables | Where-Object { $_.name -eq $name }) {
             $exists = $true
         }
 
         if ($exists -and -not $Force) {
             Write-Host "Variable '$name' already exists on target. Skipping."
-            continue
-        }
-
-        if ($DryRun) {
-            Write-Host "[DryRun] Would copy variable '$name' with value."
             continue
         }
 
@@ -121,7 +103,7 @@ function Migrate-ActionsRepoVariables {
 }
 
 function Migrate-DependabotRepoSecrets {
-    param($SourceOrg, $SourceRepo, $TargetOrg, $TargetRepo, $SourcePAT, $TargetPAT, $Force, $DryRun)
+    param($SourceOrg, $SourceRepo, $TargetOrg, $TargetRepo, $SourcePAT, $TargetPAT, $Force)
 
     Write-Host "== Migrating DEPENDABOT REPOSITORY SECRETS =="
 
@@ -146,11 +128,6 @@ function Migrate-DependabotRepoSecrets {
             continue
         }
 
-        if ($DryRun) {
-            Write-Host "[DryRun] Would copy dependabot secret '$name'."
-            continue
-        }
-
         Write-Host "Copying dependabot secret '$name' with empty placeholder..."
 
         $repoFullName = "$TargetOrg/$TargetRepo"
@@ -160,7 +137,7 @@ function Migrate-DependabotRepoSecrets {
 }
 
 function Migrate-CodespacesRepoSecrets {
-    param($SourceOrg, $SourceRepo, $TargetOrg, $TargetRepo, $SourcePAT, $TargetPAT, $Force, $DryRun)
+    param($SourceOrg, $SourceRepo, $TargetOrg, $TargetRepo, $SourcePAT, $TargetPAT, $Force)
 
     Write-Host "== Migrating CODESPACES REPOSITORY SECRETS =="
 
@@ -185,11 +162,6 @@ function Migrate-CodespacesRepoSecrets {
             continue
         }
 
-        if ($DryRun) {
-            Write-Host "[DryRun] Would copy codespaces secret '$name'."
-            continue
-        }
-
         Write-Host "Copying codespaces secret '$name' with empty placeholder..."
 
         $repoFullName = "$TargetOrg/$TargetRepo"
@@ -202,16 +174,16 @@ function Migrate-CodespacesRepoSecrets {
 foreach ($type in $Scope.Split(',')) {
     switch ($type.Trim().ToLower()) {
         'actionsreposecrets' {
-            Migrate-ActionsRepoSecrets -SourceOrg $SourceOrg -SourceRepo $SourceRepo -TargetOrg $TargetOrg -TargetRepo $TargetRepo -SourcePAT $SourcePAT -TargetPAT $TargetPAT -Force:$Force -DryRun:$DryRun
+            Migrate-ActionsRepoSecrets -SourceOrg $SourceOrg -SourceRepo $SourceRepo -TargetOrg $TargetOrg -TargetRepo $TargetRepo -SourcePAT $SourcePAT -TargetPAT $TargetPAT -Force:$Force
         }
         'actionsrepovariables' {
-            Migrate-ActionsRepoVariables -SourceOrg $SourceOrg -SourceRepo $SourceRepo -TargetOrg $TargetOrg -TargetRepo $TargetRepo -SourcePAT $SourcePAT -TargetPAT $TargetPAT -Force:$Force -DryRun:$DryRun
+            Migrate-ActionsRepoVariables -SourceOrg $SourceOrg -SourceRepo $SourceRepo -TargetOrg $TargetOrg -TargetRepo $TargetRepo -SourcePAT $SourcePAT -TargetPAT $TargetPAT -Force:$Force
         }
         'dependabotreposecrets' {
-            Migrate-DependabotRepoSecrets -SourceOrg $SourceOrg -SourceRepo $SourceRepo -TargetOrg $TargetOrg -TargetRepo $TargetRepo -SourcePAT $SourcePAT -TargetPAT $TargetPAT -Force:$Force -DryRun:$DryRun
+            Migrate-DependabotRepoSecrets -SourceOrg $SourceOrg -SourceRepo $SourceRepo -TargetOrg $TargetOrg -TargetRepo $TargetRepo -SourcePAT $SourcePAT -TargetPAT $TargetPAT -Force:$Force
         }
         'codespacesreposecrets' {
-            Migrate-CodespacesRepoSecrets -SourceOrg $SourceOrg -SourceRepo $SourceRepo -TargetOrg $TargetOrg -TargetRepo $TargetRepo -SourcePAT $SourcePAT -TargetPAT $TargetPAT -Force:$Force -DryRun:$DryRun
+            Migrate-CodespacesRepoSecrets -SourceOrg $SourceOrg -SourceRepo $SourceRepo -TargetOrg $TargetOrg -TargetRepo $TargetRepo -SourcePAT $SourcePAT -TargetPAT $TargetPAT -Force:$Force
         }
         default {
             Write-Warning "Unknown scope type: $type"
