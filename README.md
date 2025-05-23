@@ -1,76 +1,93 @@
-# GitHub Actions Secrets Migration Script
+# 🔁 GitHub Repository Migration Tool
 
-This repository contains a PowerShell script and GitHub Actions workflow to migrate **GitHub Actions repository secrets** from one repository (source) to another repository (target), possibly across different organizations.
-
----
-
-## What does this do?
-
-- Migrates **GitHub Actions secrets** by name (only the secret names are copied).
-- **Secret values are NOT transferred** due to GitHub API limitations.
-- Currently supports migrating only **Actions secrets**, **Dependabot secrets** and *8Codespaces secrets** at repository leevel (`organization` scope not supoorted).
-- Designed to be run as a GitHub Actions workflow or locally with PowerShell.
-- Supports migrating between repositories in different organizations.
+This project provides a GitHub Actions-based workflow and PowerShell script to migrate secrets and variables between repositories and organizations.
 
 ---
 
-## How it works
+## 🔐 Required Personal Access Tokens (PATs)
 
-- The script reads all **Actions secrets** from the source repository using the provided **Source PAT**.
-- For each secret found, it creates a placeholder secret with the same name (but empty value) in the target repository using the **Target PAT**.
-- This allows you to replicate the secret names and set their values manually afterward in the target repo.
+Both `SOURCE_PAT` and `TARGET_PAT` must be added as **Repository Secrets** in the target repository and require the following permissions:
 
----
+### ✅ Repository Permissions
+| Category             | Access       |
+|----------------------|--------------|
+| Actions              | Read and write |
+| Codespaces           | Read and write |
+| Codespaces metadata  | Read-only     |
+| Codespaces secrets   | Read and write |
+| Dependabot secrets   | Read and write |
+| Environments         | Read and write |
+| Metadata             | Read-only     |
+| Secrets              | Read and write |
+| Variables            | Read and write |
 
-## Prerequisites
-
-### 1. Generate Fine-Grained Personal Access Tokens (PATs)
-
-You need **two PATs**: one for the source repository (Source PAT) and one for the target repository (Target PAT).
-
-#### Fine-Grained PAT scopes required:
-
-- **Repository Access**: Select the specific repository or organization scope (depending on use case).
-- **Permissions**:
-  - **Actions secrets**: `Read and write` access
-  - **Metadata**: `Read` access
-
-> Note: Do **NOT** use classic PATs for this script, only fine-grained PATs are supported and recommended.
-
----
-
-### 2. Add PATs to GitHub Organization Secrets
-
-Store your PATs as **organization secrets** in both source and target organizations, so the GitHub Actions workflow can access them securely:
-
-- **Source PAT** secret name: `SOURCE_PAT`
-- **Target PAT** secret name: `TARGET_PAT`
-
-Make sure both secrets have access to **all repositories** in their respective organizations.
+### ✅ Organization Permissions
+| Category                        | Access         |
+|----------------------------------|----------------|
+| Organization codespaces          | Read and write |
+| Organization codespaces secrets  | Read and write |
+| Organization codespaces settings | Read and write |
+| Organization dependabot secrets  | Read and write |
+| Organization private registries  | Read and write |
+| Secrets                          | Read and write |
+| Variables                        | Read and write |
 
 ---
 
-## Usage
+## 🧪 Supported Scope Types
 
-### GitHub Actions Workflow
+Use the following scope strings (case-sensitive) in a comma-separated list to define what should be migrated:
 
-Example workflow snippet to run the migration:
+| Scope                    | Description                                                   |
+|--------------------------|---------------------------------------------------------------|
+| `actionsreposecrets`     | GitHub Actions repository-level secrets                       |
+| `actionsrepovariables`   | GitHub Actions repository-level variables                     |
+| `dependabotreposecrets`  | Dependabot repository-level secrets                           |
+| `dependabotrepovariables`| Dependabot repository-level variables                         |
+| `codespacesreposecrets`  | GitHub Codespaces repository-level secrets                    |
+| `codespacesrepovariables`| GitHub Codespaces repository-level variables                  |
+| `actionsenvsecrets`      | GitHub Actions environment-level secrets                      |
+| `actionsenvvariables`    | GitHub Actions environment-level variables                    |
+| `actionsorgsecrets`      | GitHub Actions organization-level secrets                     |
+| `actionsorgvariables`    | GitHub Actions organization-level variables                   |
 
-```yaml
-jobs:
-  migrate-secrets:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Run Migration Script
-        env:
-          GH_TOKEN: ${{ secrets.TARGET_PAT }}
-        run: |
-          pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubVariables.ps1 \
-            -SourceOrg "${{ github.event.inputs.source_org }}" \
-            -SourceRepo "${{ github.event.inputs.source_repo }}" \
-            -TargetOrg "${{ github.event.inputs.target_org }}" \
-            -TargetRepo "${{ github.event.inputs.target_repo }}" \
-            -SourcePAT "${{ secrets.SOURCE_PAT }}" \
-            -TargetPAT "${{ secrets.TARGET_PAT }}" \
-            -Scope "actions"
+---
+
+## 🚀 How to Run the Migration
+
+1. Navigate to the repository in GitHub
+2. Go to the **Actions** tab
+3. Select the workflow named **`Migrate Variables & Secrets`**
+4. Click **Run workflow**
+5. Fill in the required inputs:
+
+### Inputs
+| Input Name     | Required | Description                                                                 |
+|----------------|----------|-----------------------------------------------------------------------------|
+| `source_org`   | ✅       | Source GitHub organization name (e.g., `contoso-src`)                        |
+| `source_repo`  | ❌       | (Optional) Source repository name. Leave empty to migrate all               |
+| `target_org`   | ✅       | Target GitHub organization name (e.g., `contoso-dest`)                      |
+| `target_repo`  | ✅       | Target repository name where data will be copied                           |
+| `scope`        | ✅       | Comma-separated list of scopes to migrate (see scope table above)           |
+| `force`        | ❌       | Optional: set to `true` to overwrite existing values in the target repo/org |
+
+---
+
+### 📁 Structure
+
+- `.github/workflows/migrate.yml`: GitHub Actions workflow
+- `migration/Migrate-GitHubVariables.ps1`: Main migration logic script
+
+---
+
+## 🛑 Limitations
+
+- **Environment secrets/variables** require the target environment to exist. Creation may fail without `workflow` permission or when restricted by org policy.
+- **PATs must be stored as repository secrets**, not passed as inputs.
+
+---
+
+## 📌 Example Scope Usage
+
+```text
+actionsreposecrets,actionsrepovariables,dependabotreposecrets,actionsenvsecrets,actionsorgvariables
