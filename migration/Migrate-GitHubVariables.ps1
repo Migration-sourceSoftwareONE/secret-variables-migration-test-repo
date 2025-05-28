@@ -155,12 +155,14 @@ function Migrate-ActionsEnvVariables {
         $tUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e/variables"
         $src = Invoke-GitHubApi GET $sUri $SourcePAT
         if (-not $src) { continue }
-        foreach ($var in $src.variables) {
-            $n = $var.name
-            $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
-            if ($exists -and -not $Force) { Write-Host "  Skipping existing env var $n"; continue }
-            Write-Host "  Copying env var $n"
-            gh variable set $n --repo "$TargetOrg/$TargetRepo" --env $e --body ''
+       foreach ($var in $src.variables) {
+          $n = $var.name
+          $value = $var.value
+          if (-not $value) { $value = "" }   # Or set to "PLACEHOLDER_VALUE"
+          $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
+          if ($exists -and -not $Force) { Write-Host "  Skipping existing env var $n"; continue }
+          Write-Host "  Copying env var $n"
+          gh variable set $n --repo "$TargetOrg/$TargetRepo" --env $e --body $value
         }
     }
 }
