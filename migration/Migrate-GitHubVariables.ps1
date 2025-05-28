@@ -16,6 +16,7 @@ function Invoke-GitHubApi {
     try {
         Invoke-RestMethod -Method $Method -Uri $Uri -Headers $Headers -ContentType "application/json" -Body $BodyJson
     } catch {
+        # Suppress 404 for existence checks; warn otherwise
         if ($_.Exception.Response.StatusCode.value__ -ne 404) {
             Write-Warning "API call failed: $($_.Exception.Message) [$Method $Uri]"
         }
@@ -23,13 +24,40 @@ function Invoke-GitHubApi {
     }
 }
 
-function Ensure-EnvironmentExists {
-    param($RepoOrg, $RepoName, $Token, $EnvName)
-    $checkUri = "https://api.github.com/repos/$RepoOrg/$RepoName/environments/$EnvName"
-    $check = Invoke-GitHubApi GET $checkUri $Token
-    if (-not $check) {
-        Write-Host "  Creating environment $EnvName"
-        Invoke-GitHubApi PUT $checkUri $Token @{ wait_timer = 0 }
+function Migrate-ActionsEnvironments {
+    Write-Host "== Migrating ACTIONS ENVIRONMENTS =="
+    $srcEnvs = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments" $SourcePAT
+    if (-not $srcEnvs) { return }
+    foreach ($env in $srcEnvs.environments) {
+        $e = $env.name
+        Write-Host "Checking environment $e"
+        $tEnv = Invoke-GitHubApi GET "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e" $TargetPAT
+        if ($tEnv) {
+            Write-Host " Environment $e already exists in target."
+            continue
+        }
+        # Get environment details to copy protection rules
+        $sEnvDetails = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e" $SourcePAT
+
+        # Build payload (copying reviewers, wait timer, branch policy if present)
+        $payload = @{ }
+        $payload.name = $e
+        if ($sEnvDetails) {
+            if ($sEnvDetails.protection_rules) {
+                $payload.protection_rules = $sEnvDetails.protection_rules
+            }
+            if ($sEnvDetails.wait_timer) {
+                $payload.wait_timer = $sEnvDetails.wait_timer
+            }
+            if ($sEnvDetails.reviewers) {
+                $payload.reviewers = $sEnvDetails.reviewers
+            }
+            if ($sEnvDetails.deployment_branch_policy) {
+                $payload.deployment_branch_policy = $sEnvDetails.deployment_branch_policy
+            }
+        }
+        Write-Host " Creating environment $e in target."
+        Invoke-GitHubApi PUT "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e" $TargetPAT $payload
     }
 }
 
@@ -95,36 +123,44 @@ function Migrate-CodespacesRepoSecrets {
 
 function Migrate-ActionsEnvSecrets {
     Write-Host "== Migrating ACTIONS ENVIRONMENT SECRETS =="
+    $repoInfo = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo" $SourcePAT
+    if (-not $repoInfo) { return }
     $envs = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments" $SourcePAT
-    if (-not $envs) { return }
     foreach ($env in $envs.environments) {
         $e = $env.name
         Write-Host " Environment: $e"
-        Ensure-EnvironmentExists -RepoOrg $TargetOrg -RepoName $TargetRepo -Token $TargetPAT -EnvName $e
-        $src = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/secrets" $SourcePAT
+        $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/secrets"
+        $tUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e/secrets"
+        $src = Invoke-GitHubApi GET $sUri $SourcePAT
         if (-not $src) { continue }
         foreach ($sec in $src.secrets) {
             $n = $sec.name
+            $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
+            if ($exists -and -not $Force) { Write-Host "  Skipping existing env secret $n"; continue }
             Write-Host "  Copying env secret $n"
-            gh secret set $n --repo "$TargetOrg/$TargetRepo" --env "$e" --body ''
+            gh secret set $n --repo "$TargetOrg/$TargetRepo" --env $e --body ''
         }
     }
 }
 
 function Migrate-ActionsEnvVariables {
     Write-Host "== Migrating ACTIONS ENVIRONMENT VARIABLES =="
+    $repoInfo = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo" $SourcePAT
+    if (-not $repoInfo) { return }
     $envs = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments" $SourcePAT
-    if (-not $envs) { return }
     foreach ($env in $envs.environments) {
         $e = $env.name
         Write-Host " Environment: $e"
-        Ensure-EnvironmentExists -RepoOrg $TargetOrg -RepoName $TargetRepo -Token $TargetPAT -EnvName $e
-        $src = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/variables" $SourcePAT
+        $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/variables"
+        $tUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e/variables"
+        $src = Invoke-GitHubApi GET $sUri $SourcePAT
         if (-not $src) { continue }
         foreach ($var in $src.variables) {
             $n = $var.name
+            $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
+            if ($exists -and -not $Force) { Write-Host "  Skipping existing env var $n"; continue }
             Write-Host "  Copying env var $n"
-            gh variable set $n --repo "$TargetOrg/$TargetRepo" --env "$e" --body ''
+            gh variable set $n --repo "$TargetOrg/$TargetRepo" --env $e --body ''
         }
     }
 }
@@ -159,8 +195,39 @@ function Migrate-ActionsOrgVariables {
     }
 }
 
+function Migrate-DependabotOrgSecrets {
+    Write-Host "== Migrating DEPENDABOT ORGANIZATION SECRETS =="
+    $sUri = "https://api.github.com/orgs/$SourceOrg/dependabot/secrets"
+    $tUri = "https://api.github.com/orgs/$TargetOrg/dependabot/secrets"
+    $src = Invoke-GitHubApi GET $sUri $SourcePAT
+    if (-not $src) { return }
+    foreach ($sec in $src.secrets) {
+        $n = $sec.name
+        $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
+        if ($exists -and -not $Force) { Write-Host "Skipping existing org-dependabot secret $n"; continue }
+        Write-Host "Copying org-dependabot secret $n"
+        gh secret set $n --org "$TargetOrg" --app dependabot --body ''
+    }
+}
+
+function Migrate-CodespacesOrgSecrets {
+    Write-Host "== Migrating CODESPACES ORGANIZATION SECRETS =="
+    $sUri = "https://api.github.com/orgs/$SourceOrg/codespaces/secrets"
+    $tUri = "https://api.github.com/orgs/$TargetOrg/codespaces/secrets"
+    $src = Invoke-GitHubApi GET $sUri $SourcePAT
+    if (-not $src) { return }
+    foreach ($sec in $src.secrets) {
+        $n = $sec.name
+        $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
+        if ($exists -and -not $Force) { Write-Host "Skipping existing org-codespaces secret $n"; continue }
+        Write-Host "Copying org-codespaces secret $n"
+        gh secret set $n --org "$TargetOrg" --app codespaces --body ''
+    }
+}
+
 foreach ($t in $Scope.Split(',')) {
     switch ($t.Trim().ToLower()) {
+        'actionsenvironments'   { Migrate-ActionsEnvironments }
         'actionsreposecrets'    { Migrate-ActionsRepoSecrets }
         'actionsrepovariables'  { Migrate-ActionsRepoVariables }
         'dependabotreposecrets' { Migrate-DependabotRepoSecrets }
@@ -169,6 +236,8 @@ foreach ($t in $Scope.Split(',')) {
         'actionsenvvariables'   { Migrate-ActionsEnvVariables }
         'actionsorgsecrets'     { Migrate-ActionsOrgSecrets }
         'actionsorgvariables'   { Migrate-ActionsOrgVariables }
+        'dependabotorgsecrets'  { Migrate-DependabotOrgSecrets }
+        'codespacesorgsecrets'  { Migrate-CodespacesOrgSecrets }
         default { Write-Warning "Unknown type: $t" }
     }
 }
