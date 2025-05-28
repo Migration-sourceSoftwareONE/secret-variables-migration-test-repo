@@ -94,7 +94,7 @@ function Migrate-ActionsEnvSecrets {
         $e = $env.name
         Write-Host " Environment: $e"
         $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/secrets"
-+       $tUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e/secrets"
+        $tUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e/secrets"
         $src = Invoke-GitHubApi GET $sUri $SourcePAT
         if (-not $src) { continue }
         foreach ($sec in $src.secrets) {
