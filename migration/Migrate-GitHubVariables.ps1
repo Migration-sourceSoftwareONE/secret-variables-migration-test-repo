@@ -160,6 +160,36 @@ function Migrate-ActionsOrgVariables {
     }
 }
 
+function Migrate-DependabotOrgSecrets {
+    Write-Host "== Migrating DEPENDABOT ORGANIZATION SECRETS =="
+    $sUri = "https://api.github.com/orgs/$SourceOrg/dependabot/secrets"
+    $tUri = "https://api.github.com/orgs/$TargetOrg/dependabot/secrets"
+    $src = Invoke-GitHubApi GET $sUri $SourcePAT
+    if (-not $src) { return }
+    foreach ($sec in $src.secrets) {
+        $n = $sec.name
+        $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
+        if ($exists -and -not $Force) { Write-Host "Skipping existing org-dependabot secret $n"; continue }
+        Write-Host "Copying org-dependabot secret $n"
+        gh secret set $n --org "$TargetOrg" --app dependabot --body ''
+    }
+}
+
+function Migrate-CodespacesOrgSecrets {
+    Write-Host "== Migrating CODESPACES ORGANIZATION SECRETS =="
+    $sUri = "https://api.github.com/orgs/$SourceOrg/codespaces/secrets"
+    $tUri = "https://api.github.com/orgs/$TargetOrg/codespaces/secrets"
+    $src = Invoke-GitHubApi GET $sUri $SourcePAT
+    if (-not $src) { return }
+    foreach ($sec in $src.secrets) {
+        $n = $sec.name
+        $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
+        if ($exists -and -not $Force) { Write-Host "Skipping existing org-codespaces secret $n"; continue }
+        Write-Host "Copying org-codespaces secret $n"
+        gh secret set $n --org "$TargetOrg" --app codespaces --body ''
+    }
+}
+
 foreach ($t in $Scope.Split(',')) {
     switch ($t.Trim().ToLower()) {
         'actionsreposecrets'    { Migrate-ActionsRepoSecrets }
@@ -170,6 +200,8 @@ foreach ($t in $Scope.Split(',')) {
         'actionsenvvariables'   { Migrate-ActionsEnvVariables }
         'actionsorgsecrets'     { Migrate-ActionsOrgSecrets }
         'actionsorgvariables'   { Migrate-ActionsOrgVariables }
+        'dependabotorgsecrets'  { Migrate-DependabotOrgSecrets }
+        'codespacesorgsecrets'  { Migrate-CodespacesOrgSecrets }
         default { Write-Warning "Unknown type: $t" }
     }
 }
