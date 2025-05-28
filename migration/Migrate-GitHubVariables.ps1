@@ -117,7 +117,7 @@ function Migrate-ActionsEnvVariables {
         $e = $env.name
         Write-Host " Environment: $e"
         $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/variables"
-+       $tUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e/variables"
+       $tUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e/variables"
         $src = Invoke-GitHubApi GET $sUri $SourcePAT
         if (-not $src) { continue }
         foreach ($var in $src.variables) {
