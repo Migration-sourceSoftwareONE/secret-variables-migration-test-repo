@@ -9,6 +9,12 @@ param(
     [switch]$Force
 )
 
+function Write-Log {
+    param([string]$Message, [string]$Level = "INFO")
+    $timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+    Write-Host "[$timestamp] [$Level] $Message"
+}
+
 function Invoke-GitHubApi {
     param($Method, $Uri, $Token, $Body = $null)
     $Headers = @{ Authorization = "Bearer $Token"; Accept = "application/vnd.github+json" }
@@ -16,9 +22,21 @@ function Invoke-GitHubApi {
     try {
         Invoke-RestMethod -Method $Method -Uri $Uri -Headers $Headers -ContentType "application/json" -Body $BodyJson
     } catch {
+        # Get detailed error information
+        $statusCode = $_.Exception.Response.StatusCode.value__
+        $responseBody = $null
+        try {
+            $responseStream = $_.Exception.Response.GetResponseStream()
+            $reader = New-Object System.IO.StreamReader($responseStream)
+            $responseBody = $reader.ReadToEnd()
+        } catch {}
+        
         # Suppress 404 for existence checks; warn otherwise
-        if ($_.Exception.Response.StatusCode.value__ -ne 404) {
+        if ($statusCode -ne 404) {
             Write-Warning "API call failed: $($_.Exception.Message) [$Method $Uri]"
+            if ($responseBody) {
+                Write-Warning "Response: $responseBody"
+            }
         }
         return $null
     }
@@ -39,23 +57,42 @@ function Migrate-ActionsEnvironments {
         # Get environment details to copy protection rules
         $sEnvDetails = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e" $SourcePAT
 
-        # Build payload (copying reviewers, wait timer, branch policy if present)
-        $payload = @{ }
-        $payload.name = $e
-        if ($sEnvDetails) {
-            if ($sEnvDetails.protection_rules) {
-                $payload.protection_rules = $sEnvDetails.protection_rules
-            }
-            if ($sEnvDetails.wait_timer) {
-                $payload.wait_timer = $sEnvDetails.wait_timer
-            }
-            if ($sEnvDetails.reviewers) {
-                $payload.reviewers = $sEnvDetails.reviewers
-            }
-            if ($sEnvDetails.deployment_branch_policy) {
-                $payload.deployment_branch_policy = $sEnvDetails.deployment_branch_policy
+        # Build payload with proper structure
+        $payload = @{}
+        
+        # Add wait timer if present
+        if ($sEnvDetails.wait_timer -gt 0) {
+            $payload.wait_timer = $sEnvDetails.wait_timer
+        }
+
+        # Handle deployment_branch_policy if present
+        if ($sEnvDetails.deployment_branch_policy) {
+            $payload.deployment_branch_policy = @{
+                protected_branches = $sEnvDetails.deployment_branch_policy.protected_branches
+                custom_branch_policies = $sEnvDetails.deployment_branch_policy.custom_branch_policies
             }
         }
+        
+        # Handle reviewers if present
+        if ($sEnvDetails.reviewers -and $sEnvDetails.reviewers.Count -gt 0) {
+            $payload.reviewers = @()
+            
+            foreach ($reviewer in $sEnvDetails.reviewers) {
+                if ($reviewer.type -eq "User") {
+                    $payload.reviewers += @{
+                        type = "User"
+                        id = $reviewer.id
+                    }
+                }
+                elseif ($reviewer.type -eq "Team") {
+                    $payload.reviewers += @{
+                        type = "Team"
+                        id = $reviewer.id
+                    }
+                }
+            }
+        }
+        
         Write-Host " Creating environment $e in target."
         Invoke-GitHubApi PUT "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e" $TargetPAT $payload
     }
@@ -84,10 +121,22 @@ function Migrate-ActionsRepoVariables {
     if (-not $src) { return }
     foreach ($var in $src.variables) {
         $n = $var.name
+        $value = $var.value
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-action variable $n"; continue }
         Write-Host "Copying repo-action variable $n"
-        gh variable set $n --repo "$TargetOrg/$TargetRepo" --body ''
+        
+        # Use the actual value from the source variable
+        if ([string]::IsNullOrEmpty($value)) {
+            $value = "PLACEHOLDER_VALUE"
+        }
+        
+        # Use API instead of CLI to set the variable
+        $varPayload = @{
+            name = $n
+            value = $value
+        }
+        Invoke-GitHubApi POST $tUri $TargetPAT $varPayload
     }
 }
 
@@ -180,11 +229,20 @@ function Migrate-ActionsEnvVariables {
         foreach ($var in $src.variables) {
             $n = $var.name
             $value = $var.value
-            if (-not $value) { $value = "" }   # Or set to "PLACEHOLDER_VALUE"
+            if ([string]::IsNullOrEmpty($value)) {
+                $value = "PLACEHOLDER_VALUE"
+            }
+            
             $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
             if ($exists -and -not $Force) { Write-Host "  Skipping existing env var $n"; continue }
             Write-Host "  Copying env var $n"
-            gh variable set $n --repo "$TargetOrg/$TargetRepo" --env $e --body $value
+            
+            # Use API instead of CLI to set the variable
+            $varPayload = @{
+                name = $n
+                value = $value
+            }
+            Invoke-GitHubApi POST $tUri $TargetPAT $varPayload
         }
     }
 }
@@ -212,10 +270,21 @@ function Migrate-ActionsOrgVariables {
     if (-not $src) { return }
     foreach ($var in $src.variables) {
         $n = $var.name
+        $value = $var.value
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-action variable $n"; continue }
         Write-Host "Copying org-action variable $n"
-        gh variable set $n --org "$TargetOrg" --body 'PLACEHOLDER_VALUE'
+        
+        if ([string]::IsNullOrEmpty($value)) {
+            $value = "PLACEHOLDER_VALUE"
+        }
+        
+        # Use API instead of CLI to set the variable
+        $varPayload = @{
+            name = $n
+            value = $value
+        }
+        Invoke-GitHubApi POST $tUri $TargetPAT $varPayload
     }
 }
 
