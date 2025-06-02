@@ -24,11 +24,8 @@ Both `SOURCE_PAT` and `TARGET_PAT` must be added as **Repository Secrets** in th
 ### ✅ Organization Permissions
 | Category                        | Access         |
 |----------------------------------|----------------|
-| Organization codespaces          | Read and write |
 | Organization codespaces secrets  | Read and write |
-| Organization codespaces settings | Read and write |
 | Organization dependabot secrets  | Read and write |
-| Organization private registries  | Read and write |
 | Secrets                          | Read and write |
 | Variables                        | Read and write |
 
@@ -50,6 +47,8 @@ Use the following scope strings (case-sensitive) in a comma-separated list to de
 | `actionsenvvariables`    | GitHub Actions environment-level variables                    |
 | `actionsorgsecrets`      | GitHub Actions organization-level secrets                     |
 | `actionsorgvariables`    | GitHub Actions organization-level variables                   |
+| `dependabotorgsecrets`   | Dependabot organization-level secrets                         |
+| `codespacesorgsecrets`   | Codespaces organization-level secrets                         |
 
 ---
 
@@ -82,8 +81,8 @@ Use the following scope strings (case-sensitive) in a comma-separated list to de
 
 ## 🛑 Limitations
 
-- **Environment secrets/variables** require the target environment to exist. Creation may fail without `workflow` permission or when restricted by org policy.
-- **PATs must be stored as repository secrets**, not passed as inputs.
+- **Environment secrets/variables** require the target environment to exist. Currently the workflow doesn't support migrating environments. In order to successfully migrate environment variables and secrets user needs to manually create environments from source repo in target repo
+- **PATs must be stored as repository secrets**, not passed as inputs for security reasons.
 
 ---
 
