@@ -123,12 +123,23 @@ function Migrate-CodespacesRepoSecrets {
 
 function Migrate-ActionsEnvSecrets {
     Write-Host "== Migrating ACTIONS ENVIRONMENT SECRETS =="
-    $repoInfo = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo" $SourcePAT
-    if (-not $repoInfo) { return }
+    # Ensure environments exist first
+    Ensure-EnvironmentsExist
+    
     $envs = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments" $SourcePAT
+    if (-not $envs) { return }
+    
     foreach ($env in $envs.environments) {
         $e = $env.name
         Write-Host " Environment: $e"
+        
+        # Verify environment exists in target repo
+        $tEnv = Invoke-GitHubApi GET "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e" $TargetPAT
+        if (-not $tEnv) { 
+            Write-Warning "Environment $e doesn't exist in target repo, skipping secrets migration for this environment"
+            continue
+        }
+        
         $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/secrets"
         $tUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e/secrets"
         $src = Invoke-GitHubApi GET $sUri $SourcePAT
@@ -145,24 +156,35 @@ function Migrate-ActionsEnvSecrets {
 
 function Migrate-ActionsEnvVariables {
     Write-Host "== Migrating ACTIONS ENVIRONMENT VARIABLES =="
-    $repoInfo = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo" $SourcePAT
-    if (-not $repoInfo) { return }
+    # Ensure environments exist first
+    Ensure-EnvironmentsExist
+    
     $envs = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments" $SourcePAT
+    if (-not $envs) { return }
+    
     foreach ($env in $envs.environments) {
         $e = $env.name
         Write-Host " Environment: $e"
+        
+        # Verify environment exists in target repo
+        $tEnv = Invoke-GitHubApi GET "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e" $TargetPAT
+        if (-not $tEnv) { 
+            Write-Warning "Environment $e doesn't exist in target repo, skipping variables migration for this environment"
+            continue
+        }
+        
         $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/variables"
         $tUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e/variables"
         $src = Invoke-GitHubApi GET $sUri $SourcePAT
         if (-not $src) { continue }
-       foreach ($var in $src.variables) {
-          $n = $var.name
-          $value = $var.value
-          if (-not $value) { $value = "" }   # Or set to "PLACEHOLDER_VALUE"
-          $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
-          if ($exists -and -not $Force) { Write-Host "  Skipping existing env var $n"; continue }
-          Write-Host "  Copying env var $n"
-          gh variable set $n --repo "$TargetOrg/$TargetRepo" --env $e --body $value
+        foreach ($var in $src.variables) {
+            $n = $var.name
+            $value = $var.value
+            if (-not $value) { $value = "" }   # Or set to "PLACEHOLDER_VALUE"
+            $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
+            if ($exists -and -not $Force) { Write-Host "  Skipping existing env var $n"; continue }
+            Write-Host "  Copying env var $n"
+            gh variable set $n --repo "$TargetOrg/$TargetRepo" --env $e --body $value
         }
     }
 }
@@ -227,9 +249,35 @@ function Migrate-CodespacesOrgSecrets {
     }
 }
 
-foreach ($t in $Scope.Split(',')) {
-    switch ($t.Trim().ToLower()) {
-        'actionsenvironments'   { Migrate-ActionsEnvironments }
+# New function to ensure environments exist before migrating their secrets/variables
+function Ensure-EnvironmentsExist {
+    # Check if environments are already migrated
+    $global:EnvironmentsMigrated = $global:EnvironmentsMigrated -or $false
+    if ($global:EnvironmentsMigrated) {
+        Write-Host "Environments already migrated, skipping..."
+        return
+    }
+    
+    # Migrate environments
+    Write-Host "Ensuring environments exist in target repo before migrating their secrets and variables"
+    Migrate-ActionsEnvironments
+    $global:EnvironmentsMigrated = $true
+}
+
+# Process migrations in the correct order
+$scopeItems = $Scope.Split(',') | ForEach-Object { $_.Trim().ToLower() }
+
+# First, process environment-related migrations if needed
+$needsEnvironments = ($scopeItems -contains 'actionsenvsecrets') -or ($scopeItems -contains 'actionsenvvariables')
+if ($needsEnvironments -or ($scopeItems -contains 'actionsenvironments')) {
+    Ensure-EnvironmentsExist
+}
+
+# Then process everything else in the requested order
+foreach ($t in $scopeItems) {
+    switch ($t) {
+        # Skip environments as we've already processed them if needed
+        'actionsenvironments'   { if (-not $needsEnvironments) { Migrate-ActionsEnvironments } }
         'actionsreposecrets'    { Migrate-ActionsRepoSecrets }
         'actionsrepovariables'  { Migrate-ActionsRepoVariables }
         'dependabotreposecrets' { Migrate-DependabotRepoSecrets }
