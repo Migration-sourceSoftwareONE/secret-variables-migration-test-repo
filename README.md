@@ -8,7 +8,7 @@ This repository contains a PowerShell script and GitHub Actions workflow to migr
 
 - Migrates **GitHub Actions secrets** by name (only the secret names are copied).
 - **Secret values are NOT transferred** due to GitHub API limitations.
-- Currently supports migrating only **Actions secrets**, **Dependabot secrets** and *8Codespaces secrets** at repository leevel (`organization` scope not supoorted).
+- Currently supports all secrets and variables with some limitations (for environments variables and secrets user have to manually add envrionments on target repo)
 - Designed to be run as a GitHub Actions workflow or locally with PowerShell.
 - Supports migrating between repositories in different organizations.
 
@@ -16,7 +16,7 @@ This repository contains a PowerShell script and GitHub Actions workflow to migr
 
 ## How it works
 
-- The script reads all **Actions secrets** from the source repository using the provided **Source PAT**.
+- The script reads all **secrets** and **variables** from the source repository using the provided **Source PAT**.
 - For each secret found, it creates a placeholder secret with the same name (but empty value) in the target repository using the **Target PAT**.
 - This allows you to replicate the secret names and set their values manually afterward in the target repo.
 
