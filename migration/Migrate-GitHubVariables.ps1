@@ -46,53 +46,11 @@ function Invoke-GitHubApi {
     }
 }
 
-function Get-Secret-Value {
-    param($SecretName, $SourceType, $EnvName = "")
+function Create-TempSecretWorkflow {
+    param($SecretName, $SecretOutputPath)
     
-    $secretFile = Join-Path $TempSecretDir "$SourceType-$EnvName-$SecretName.secret"
-    
-    try {
-        # Create a very small workflow that outputs the secret to a file (using cat)
-        $workflowId = [Guid]::NewGuid().ToString()
-        $workflowName = "temp-secret-export-$workflowId"
-        $workflowPath = ".github/workflows/$workflowName.yml"
-        $secretEnvVar = ""
-        $secretCommand = ""
-        
-        # Different workflow content based on secret type
-        switch ($SourceType) {
-            "repo" {
-                $secretEnvVar = "env:\$SecretName = \${{ secrets.$SecretName }}"
-                $secretCommand = "echo \${{ secrets.$SecretName }} > `"$secretFile`""
-            }
-            "repo-dependabot" {
-                $secretEnvVar = "env:\$SecretName = \${{ secrets.$SecretName }}"
-                $secretCommand = "echo \${{ secrets.$SecretName }} > `"$secretFile`""
-            } 
-            "repo-codespaces" {
-                $secretEnvVar = "env:\$SecretName = \${{ secrets.$SecretName }}"
-                $secretCommand = "echo \${{ secrets.$SecretName }} > `"$secretFile`""
-            }
-            "env" {
-                $secretEnvVar = "env:\$SecretName = \${{ secrets.$SecretName }}"
-                $secretCommand = "echo \${{ secrets.$SecretName }} > `"$secretFile`""
-            }
-            "org" {
-                $secretEnvVar = "env:\$SecretName = \${{ secrets.$SecretName }}"
-                $secretCommand = "echo \${{ secrets.$SecretName }} > `"$secretFile`""
-            }
-            "org-dependabot" {
-                $secretEnvVar = "env:\$SecretName = \${{ secrets.$SecretName }}"
-                $secretCommand = "echo \${{ secrets.$SecretName }} > `"$secretFile`""
-            }
-            "org-codespaces" {
-                $secretEnvVar = "env:\$SecretName = \${{ secrets.$SecretName }}"
-                $secretCommand = "echo \${{ secrets.$SecretName }} > `"$secretFile`""
-            }
-        }
-        
-        # Create temporary workflow file to output the secret value
-        $workflowContent = @"
+    # Use heredoc to create the workflow content
+    $workflowContent = @'
 name: Temporary Secret Export
 
 on:
@@ -105,47 +63,69 @@ jobs:
       - name: Export Secret to File
         shell: powershell
         run: |
-          # Set secret to environment variable
-          $secretEnvVar
-          # Export to file
-          $secretCommand
-"@
+          # Export secret value to a file
+          echo "${{ secrets.SECRET_NAME }}" > "SECRET_OUTPUT_PATH"
+'@
+    
+    # Replace the placeholder values
+    $workflowContent = $workflowContent.Replace('SECRET_NAME', $SecretName)
+    $workflowContent = $workflowContent.Replace('SECRET_OUTPUT_PATH', $SecretOutputPath)
+    
+    return $workflowContent
+}
 
-        # Write the workflow to a local file
-        $tempDir = New-Item -ItemType Directory -Path (Join-Path $TempSecretDir ".github\workflows") -Force
-        $tempWorkflow = Join-Path $tempDir $workflowName
-        Set-Content -Path "$tempWorkflow.yml" -Value $workflowContent
+function Get-Secret-Value {
+    param($SecretName, $SourceType, $EnvName = "")
+    
+    $secretFile = Join-Path $TempSecretDir "secret_$SecretName.txt"
+    
+    try {
+        # Create a temporary workflow
+        $workflowId = [Guid]::NewGuid().ToString()
+        $workflowName = "temp-secret-export-$workflowId"
+        $workflowPath = ".github/workflows/$workflowName.yml"
         
-        # Commit and push the workflow to the repo
+        # Create workflow content for this secret
+        $workflowContent = Create-TempSecretWorkflow -SecretName $SecretName -SecretOutputPath $secretFile
+        
+        # Write the workflow to a temporary local file first
+        $tempDir = New-Item -ItemType Directory -Path (Join-Path $TempSecretDir ".github\workflows") -Force
+        $tempWorkflowFile = Join-Path $tempDir "$workflowName.yml"
+        Set-Content -Path $tempWorkflowFile -Value $workflowContent
+        
+        # Use REST API to commit the workflow to the repo
         $env:GH_TOKEN = $SourcePAT
         
-        # Use a direct REST API call instead of git commands
-        $workflowContent64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($workflowContent))
+        # Get workflow content as base64
+        $workflowContentBytes = [System.Text.Encoding]::UTF8.GetBytes($workflowContent)
+        $workflowContentBase64 = [Convert]::ToBase64String($workflowContentBytes)
+        
+        # Commit the workflow file
         $commitBody = @{
-            message = "temp: Add workflow to export secret $SecretName"
-            content = $workflowContent64
-            branch = "main"  # Adjust this if your default branch is different
+            message = "temp: Export secret $SecretName"
+            content = $workflowContentBase64
+            branch = "main" # Adjust if your default branch is different
         }
         
         $apiUrl = "https://api.github.com/repos/$SourceOrg/$SourceRepo/contents/$workflowPath"
         $response = Invoke-GitHubApi PUT $apiUrl $SourcePAT $commitBody
         
         if (-not $response) {
-            Write-Warning "Failed to create temporary workflow for secret extraction"
+            Write-Warning "Failed to create workflow for secret extraction"
             return "PLACEHOLDER_VALUE"
         }
         
         # Trigger the workflow
         $runUrl = "https://api.github.com/repos/$SourceOrg/$SourceRepo/actions/workflows/$workflowName.yml/dispatches"
         $runBody = @{
-            ref = "main"  # Adjust this if your default branch is different
+            ref = "main" # Adjust if your default branch is different
         }
         
         $runResponse = Invoke-GitHubApi POST $runUrl $SourcePAT $runBody
         
-        # Wait for the workflow to complete (up to 60 seconds)
+        # Wait for the workflow to complete and file to be created
         Write-Host "  Waiting for secret extraction workflow to complete..."
-        $maxWait = 60
+        $maxWait = 60 # seconds
         $waited = 0
         $completed = $false
         $secretValue = "PLACEHOLDER_VALUE"
@@ -154,11 +134,10 @@ jobs:
             Start-Sleep -Seconds 2
             $waited += 2
             
-            # Check if the secret file exists
             if (Test-Path $secretFile) {
                 $secretValue = Get-Content $secretFile -Raw
                 $completed = $true
-                Write-Host "  Secret value obtained successfully"
+                Write-Host "  Secret value extracted successfully"
             }
         }
         
@@ -166,26 +145,27 @@ jobs:
             Write-Warning "  Timed out waiting for secret extraction"
         }
         
-        # Clean up the workflow file from the repo
+        # Delete the workflow file
         $deleteUrl = "https://api.github.com/repos/$SourceOrg/$SourceRepo/contents/$workflowPath"
         $shaResponse = Invoke-GitHubApi GET $deleteUrl $SourcePAT
         
         if ($shaResponse -and $shaResponse.sha) {
             $deleteBody = @{
-                message = "temp: Remove workflow to export secret $SecretName"
+                message = "cleanup: Remove temporary secret export workflow"
                 sha = $shaResponse.sha
-                branch = "main"  # Adjust this if your default branch is different
+                branch = "main" # Adjust if your default branch is different
             }
             
             Invoke-GitHubApi DELETE $deleteUrl $SourcePAT $deleteBody | Out-Null
         }
         
-        # Clean up the temporary file
+        # Clean up the local file
         if (Test-Path $secretFile) {
             Remove-Item $secretFile -Force
         }
         
         return $secretValue
+        
     } catch {
         Write-Warning "  Error retrieving secret value for ${SecretName}: $($_.Exception.Message)"
         return "PLACEHOLDER_VALUE"
