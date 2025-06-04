@@ -10,6 +10,17 @@ param(
     [switch]$Force
 )
 
+# Trim spaces from organization and repository names
+$SourceOrg = $SourceOrg.Trim()
+$SourceRepo = $SourceRepo.Trim()
+$TargetOrg = $TargetOrg.Trim()
+$TargetRepo = $TargetRepo.Trim()
+
+Write-Host "Source Organization: '$SourceOrg'"
+Write-Host "Source Repository: '$SourceRepo'"
+Write-Host "Target Organization: '$TargetOrg'"
+Write-Host "Target Repository: '$TargetRepo'"
+
 function Invoke-GitHubApi {
     param($Method, $Uri, $Token, $Body = $null)
     $Headers = @{ Authorization = "Bearer $Token"; Accept = "application/vnd.github+json" }
