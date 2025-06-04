@@ -21,7 +21,7 @@ Write-Host "Source Repository: '$SourceRepo'"
 Write-Host "Target Organization: '$TargetOrg'"
 Write-Host "Target Repository: '$TargetRepo'"
 
-# Create a temporary directory for storing secret and variable values if not provided
+# Create a temporary directory for storing variable values if not provided
 if (-not $TempSecretDir) {
     $TempSecretDir = Join-Path $env:TEMP "GHSecretsMigration_$([DateTime]::Now.ToString('yyyyMMddHHmmss'))"
 }
@@ -43,132 +43,6 @@ function Invoke-GitHubApi {
             }
         }
         return $null
-    }
-}
-
-function Create-TempSecretWorkflow {
-    param($SecretName, $SecretOutputPath)
-    
-    # Use heredoc to create the workflow content
-    $workflowContent = @'
-name: Temporary Secret Export
-
-on:
-  workflow_dispatch:
-
-jobs:
-  export-secret:
-    runs-on: [self-hosted, Windows, X64]
-    steps:
-      - name: Export Secret to File
-        shell: powershell
-        run: |
-          # Export secret value to a file
-          echo "${{ secrets.SECRET_NAME }}" > "SECRET_OUTPUT_PATH"
-'@
-    
-    # Replace the placeholder values
-    $workflowContent = $workflowContent.Replace('SECRET_NAME', $SecretName)
-    $workflowContent = $workflowContent.Replace('SECRET_OUTPUT_PATH', $SecretOutputPath)
-    
-    return $workflowContent
-}
-
-function Get-Secret-Value {
-    param($SecretName, $SourceType, $EnvName = "")
-    
-    $secretFile = Join-Path $TempSecretDir "secret_$SecretName.txt"
-    
-    try {
-        # Create a temporary workflow
-        $workflowId = [Guid]::NewGuid().ToString()
-        $workflowName = "temp-secret-export-$workflowId"
-        $workflowPath = ".github/workflows/$workflowName.yml"
-        
-        # Create workflow content for this secret
-        $workflowContent = Create-TempSecretWorkflow -SecretName $SecretName -SecretOutputPath $secretFile
-        
-        # Write the workflow to a temporary local file first
-        $tempDir = New-Item -ItemType Directory -Path (Join-Path $TempSecretDir ".github\workflows") -Force
-        $tempWorkflowFile = Join-Path $tempDir "$workflowName.yml"
-        Set-Content -Path $tempWorkflowFile -Value $workflowContent
-        
-        # Use REST API to commit the workflow to the repo
-        $env:GH_TOKEN = $SourcePAT
-        
-        # Get workflow content as base64
-        $workflowContentBytes = [System.Text.Encoding]::UTF8.GetBytes($workflowContent)
-        $workflowContentBase64 = [Convert]::ToBase64String($workflowContentBytes)
-        
-        # Commit the workflow file
-        $commitBody = @{
-            message = "temp: Export secret $SecretName"
-            content = $workflowContentBase64
-            branch = "main" # Adjust if your default branch is different
-        }
-        
-        $apiUrl = "https://api.github.com/repos/$SourceOrg/$SourceRepo/contents/$workflowPath"
-        $response = Invoke-GitHubApi PUT $apiUrl $SourcePAT $commitBody
-        
-        if (-not $response) {
-            Write-Warning "Failed to create workflow for secret extraction"
-            return "PLACEHOLDER_VALUE"
-        }
-        
-        # Trigger the workflow
-        $runUrl = "https://api.github.com/repos/$SourceOrg/$SourceRepo/actions/workflows/$workflowName.yml/dispatches"
-        $runBody = @{
-            ref = "main" # Adjust if your default branch is different
-        }
-        
-        $runResponse = Invoke-GitHubApi POST $runUrl $SourcePAT $runBody
-        
-        # Wait for the workflow to complete and file to be created
-        Write-Host "  Waiting for secret extraction workflow to complete..."
-        $maxWait = 60 # seconds
-        $waited = 0
-        $completed = $false
-        $secretValue = "PLACEHOLDER_VALUE"
-        
-        while ($waited -lt $maxWait -and -not $completed) {
-            Start-Sleep -Seconds 2
-            $waited += 2
-            
-            if (Test-Path $secretFile) {
-                $secretValue = Get-Content $secretFile -Raw
-                $completed = $true
-                Write-Host "  Secret value extracted successfully"
-            }
-        }
-        
-        if (-not $completed) {
-            Write-Warning "  Timed out waiting for secret extraction"
-        }
-        
-        # Delete the workflow file
-        $deleteUrl = "https://api.github.com/repos/$SourceOrg/$SourceRepo/contents/$workflowPath"
-        $shaResponse = Invoke-GitHubApi GET $deleteUrl $SourcePAT
-        
-        if ($shaResponse -and $shaResponse.sha) {
-            $deleteBody = @{
-                message = "cleanup: Remove temporary secret export workflow"
-                sha = $shaResponse.sha
-                branch = "main" # Adjust if your default branch is different
-            }
-            
-            Invoke-GitHubApi DELETE $deleteUrl $SourcePAT $deleteBody | Out-Null
-        }
-        
-        # Clean up the local file
-        if (Test-Path $secretFile) {
-            Remove-Item $secretFile -Force
-        }
-        
-        return $secretValue
-        
-    } catch {
-        Write-Warning "  Error retrieving secret value for ${SecretName}: $($_.Exception.Message)"
-        return "PLACEHOLDER_VALUE"
     }
 }
 
@@ -205,6 +79,144 @@ function Get-Variable-Value {
     }
 }
 
+function Create-SecretsExtractionWorkflow {
+    Write-Host "== Creating Secrets Extraction Workflow =="
+    
+    # Create a workflow file to extract all secrets at once
+    $workflowContent = @"
+name: Extract Secrets
+
+on:
+  workflow_dispatch:
+
+jobs:
+  extract:
+    runs-on: [self-hosted, Windows, X64]
+    steps:
+      - name: Export All Secrets
+        shell: powershell
+        run: |
+          # Create output directory
+          New-Item -ItemType Directory -Path 'C:\temp\secrets' -Force
+          
+          # Output all available secrets
+          echo "## REPOSITORY SECRETS ##"
+"@
+
+    # Add repo secrets
+    $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/actions/secrets"
+    $repoSecrets = Invoke-GitHubApi GET $sUri $SourcePAT
+    if ($repoSecrets -and $repoSecrets.total_count -gt 0) {
+        foreach ($sec in $repoSecrets.secrets) {
+            $n = $sec.name
+            $workflowContent += @"
+          
+          echo "Extracting repo secret: $n"
+          echo "`${{ secrets.$n }}" | Out-File -FilePath "C:\temp\secrets\repo_${n}.txt" -Encoding utf8
+"@
+        }
+    }
+    
+    # Add environment secrets
+    $envs = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments" $SourcePAT
+    if ($envs -and $envs.environments.Count -gt 0) {
+        foreach ($env in $envs.environments) {
+            $e = $env.name
+            $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/secrets"
+            $envSecrets = Invoke-GitHubApi GET $sUri $SourcePAT
+            
+            if ($envSecrets -and $envSecrets.total_count -gt 0) {
+                $workflowContent += @"
+          
+          echo "## ENVIRONMENT '$e' SECRETS ##"
+"@
+                foreach ($sec in $envSecrets.secrets) {
+                    $n = $sec.name
+                    $workflowContent += @"
+          
+          echo "Extracting env '$e' secret: $n"
+          echo "`${{ secrets.$n }}" | Out-File -FilePath "C:\temp\secrets\env_${e}_${n}.txt" -Encoding utf8
+"@
+                }
+            }
+        }
+    }
+    
+    # Create the workflow file locally
+    $workflowDir = Join-Path $TempSecretDir ".github\workflows"
+    $workflowPath = Join-Path $workflowDir "extract_secrets.yml"
+    New-Item -ItemType Directory -Path $workflowDir -Force | Out-Null
+    Set-Content -Path $workflowPath -Value $workflowContent
+    
+    Write-Host "== Secret Extraction Workflow Created =="
+    Write-Host "Extraction workflow file created at: $workflowPath"
+    Write-Host @"
+========================================================
+IMPORTANT: To extract secrets, please follow these steps:
+1. Go to GitHub repository: https://github.com/$SourceOrg/$SourceRepo
+2. Create a new workflow file at: .github/workflows/extract_secrets.yml
+3. Copy and paste the content from: $workflowPath
+4. Commit the workflow
+5. Run the workflow manually from the Actions tab
+6. After the workflow completes, check C:\temp\secrets folder on your self-hosted runner
+   for the secret files
+7. Press Enter here when the secrets have been extracted
+========================================================
+"@
+    
+    Read-Host "Press Enter to continue after extracting secrets"
+    
+    # Check if secrets were extracted
+    $secretsPath = "C:\temp\secrets"
+    if (-not (Test-Path $secretsPath)) {
+        Write-Warning "Secrets folder not found at $secretsPath. Using placeholder values."
+    } else {
+        Write-Host "Found secrets folder at $secretsPath with $(Get-ChildItem $secretsPath | Measure-Object | Select-Object -ExpandProperty Count) secret files"
+    }
+}
+
+function Get-Secret-Value {
+    param($SecretName, $SecretType, $EnvName = "")
+    
+    # Determine the path to the secret file based on type
+    $secretsPath = "C:\temp\secrets"
+    $secretFile = ""
+    
+    switch ($SecretType) {
+        "repo" {
+            $secretFile = Join-Path $secretsPath "repo_${SecretName}.txt"
+        }
+        "repo-dependabot" {
+            $secretFile = Join-Path $secretsPath "repo_${SecretName}.txt"
+        }
+        "repo-codespaces" {
+            $secretFile = Join-Path $secretsPath "repo_${SecretName}.txt"
+        }
+        "env" {
+            $secretFile = Join-Path $secretsPath "env_${EnvName}_${SecretName}.txt"
+        }
+        "org" {
+            $secretFile = Join-Path $secretsPath "org_${SecretName}.txt"
+        }
+        "org-dependabot" {
+            $secretFile = Join-Path $secretsPath "org_${SecretName}.txt"
+        }
+        "org-codespaces" {
+            $secretFile = Join-Path $secretsPath "org_${SecretName}.txt"
+        }
+    }
+    
+    # Check if file exists
+    if (Test-Path $secretFile) {
+        $secretValue = Get-Content -Path $secretFile -Raw
+        Write-Host "  Retrieved value for secret $SecretName from file"
+        return $secretValue
+    } else {
+        Write-Warning "  Secret file not found for $SecretName at $secretFile"
+        return "PLACEHOLDER_VALUE"
+    }
+}
+
 function Migrate-ActionsRepoSecrets {
     Write-Host "== Migrating ACTIONS REPOSITORY SECRETS =="
     $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/actions/secrets"
@@ -217,8 +229,8 @@ function Migrate-ActionsRepoSecrets {
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-action secret $n"; continue }
         Write-Host "Copying repo-action secret $n"
         
-        # Get secret value from source
-        $value = Get-Secret-Value -SecretName $n -SourceType "repo"
+        # Get secret value from file
+        $value = Get-Secret-Value -SecretName $n -SecretType "repo"
         
         # Use TARGET_PAT for GitHub CLI operations
         $env:GH_TOKEN = $TargetPAT
@@ -259,8 +271,8 @@ function Migrate-DependabotRepoSecrets {
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-dependabot secret $n"; continue }
         Write-Host "Copying repo-dependabot secret $n"
         
-        # Get secret value from source
-        $value = Get-Secret-Value -SecretName $n -SourceType "repo-dependabot"
+        # Get secret value from file
+        $value = Get-Secret-Value -SecretName $n -SecretType "repo-dependabot"
         
         # Use TARGET_PAT for GitHub CLI operations
         $env:GH_TOKEN = $TargetPAT
@@ -280,8 +292,8 @@ function Migrate-CodespacesRepoSecrets {
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-codespaces secret $n"; continue }
         Write-Host "Copying repo-codespaces secret $n"
         
-        # Get secret value from source
-        $value = Get-Secret-Value -SecretName $n -SourceType "repo-codespaces"
+        # Get secret value from file
+        $value = Get-Secret-Value -SecretName $n -SecretType "repo-codespaces"
         
         # Use TARGET_PAT for GitHub CLI operations
         $env:GH_TOKEN = $TargetPAT
@@ -335,8 +347,8 @@ function Migrate-ActionsEnvSecrets {
             if ($exists -and -not $Force) { Write-Host "  Skipping existing env secret $n"; continue }
             Write-Host "  Copying env secret $n"
             
-            # Get secret value from source
-            $value = Get-Secret-Value -SecretName $n -SourceType "env" -EnvName $e
+            # Get secret value from file
+            $value = Get-Secret-Value -SecretName $n -SecretType "env" -EnvName $e
             
             # Use TARGET_PAT for GitHub CLI operations
             $env:GH_TOKEN = $TargetPAT
@@ -413,8 +425,8 @@ function Migrate-ActionsOrgSecrets {
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-action secret $n"; continue }
         Write-Host "Copying org-action secret $n"
         
-        # Get secret value from source
-        $value = Get-Secret-Value -SecretName $n -SourceType "org"
+        # Get secret value from file
+        $value = Get-Secret-Value -SecretName $n -SecretType "org"
         
         # Use TARGET_PAT for GitHub CLI operations
         $env:GH_TOKEN = $TargetPAT
@@ -471,8 +483,8 @@ function Migrate-DependabotOrgSecrets {
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-dependabot secret $n"; continue }
         Write-Host "Copying org-dependabot secret $n"
         
-        # Get secret value from source
-        $value = Get-Secret-Value -SecretName $n -SourceType "org-dependabot"
+        # Get secret value from file
+        $value = Get-Secret-Value -SecretName $n -SecretType "org-dependabot"
         
         # Use TARGET_PAT for GitHub CLI operations
         $env:GH_TOKEN = $TargetPAT
@@ -500,8 +512,8 @@ function Migrate-CodespacesOrgSecrets {
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-codespaces secret $n"; continue }
         Write-Host "Copying org-codespaces secret $n"
         
-        # Get secret value from source
-        $value = Get-Secret-Value -SecretName $n -SourceType "org-codespaces"
+        # Get secret value from file
+        $value = Get-Secret-Value -SecretName $n -SecretType "org-codespaces"
         
         # Use TARGET_PAT for GitHub CLI operations
         $env:GH_TOKEN = $TargetPAT
@@ -559,24 +571,8 @@ Write-Host "Authenticating GitHub CLI with SOURCE_PAT..."
 $env:GH_TOKEN = $SourcePAT
 gh auth status
 
-# Test ability to create and run workflows
-Write-Host "Testing ability to create and run workflows..."
-try {
-    $env:GH_TOKEN = $SourcePAT
-    
-    # List repositories to ensure the token has repo access
-    $repoCheck = gh repo list $SourceOrg --limit 1 --json name
-    if ($repoCheck) {
-        Write-Host "✅ Successfully verified repository access via GitHub CLI"
-    } else {
-        Write-Warning "❌ Could not verify repository access - check PAT permissions"
-    }
-    
-    Write-Host "This script will use a temporary GitHub workflow to extract secret values"
-    Write-Host "The PAT needs 'repo' and 'workflow' permissions for this to work"
-} catch {
-    Write-Warning "❌ Issues with GitHub CLI or permissions: $($_.Exception.Message)"
-}
+# Create the workflow for secrets extraction
+Create-SecretsExtractionWorkflow
 
 foreach ($t in $Scope.Split(',')) {
     $trimmedType = $t.Trim().ToLower()
