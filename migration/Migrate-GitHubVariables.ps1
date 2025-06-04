@@ -21,6 +21,13 @@ Write-Host "Source Repository: '$SourceRepo'"
 Write-Host "Target Organization: '$TargetOrg'"
 Write-Host "Target Repository: '$TargetRepo'"
 
+# Create a temporary directory for storing variable values if not provided
+if (-not $TempSecretDir) {
+    $TempSecretDir = Join-Path $env:TEMP "GHSecretsMigration_$([DateTime]::Now.ToString('yyyyMMddHHmmss'))"
+}
+New-Item -ItemType Directory -Path $TempSecretDir -Force | Out-Null
+Write-Host "Using temporary directory for value storage: $TempSecretDir"
+
 function Invoke-GitHubApi {
     param($Method, $Uri, $Token, $Body = $null)
     $Headers = @{ Authorization = "Bearer $Token"; Accept = "application/vnd.github+json" }
@@ -31,9 +38,89 @@ function Invoke-GitHubApi {
         # Suppress 404 for existence checks; warn otherwise
         if ($_.Exception.Response.StatusCode.value__ -ne 404) {
             Write-Warning "API call failed: $($_.Exception.Message) [$Method $Uri]"
-            Write-Warning "Response: $($_.ErrorDetails.Message)"
+            if ($_.ErrorDetails) {
+                Write-Warning "Response: $($_.ErrorDetails.Message)"
+            }
         }
         return $null
+    }
+}
+
+function Get-Secret-Value {
+    param($SecretName, $SourceType, $EnvName = "")
+    
+    # Set SOURCE_PAT for GitHub CLI operations
+    $env:GH_TOKEN = $SourcePAT
+    
+    try {
+        $secretValue = ""
+        switch ($SourceType) {
+            "repo" {
+                $secretValue = gh secret get $SecretName --repo "$SourceOrg/$SourceRepo"
+            }
+            "repo-dependabot" {
+                $secretValue = gh secret get $SecretName --repo "$SourceOrg/$SourceRepo" --app dependabot
+            }
+            "repo-codespaces" {
+                $secretValue = gh secret get $SecretName --repo "$SourceOrg/$SourceRepo" --app codespaces
+            }
+            "env" {
+                $secretValue = gh secret get $SecretName --repo "$SourceOrg/$SourceRepo" --env $EnvName
+            }
+            "org" {
+                $secretValue = gh secret get $SecretName --org "$SourceOrg"
+            }
+            "org-dependabot" {
+                $secretValue = gh secret get $SecretName --org "$SourceOrg" --app dependabot
+            }
+            "org-codespaces" {
+                $secretValue = gh secret get $SecretName --org "$SourceOrg" --app codespaces
+            }
+        }
+        
+        if ($secretValue) {
+            Write-Host "  Retrieved value for secret $SecretName"
+            return $secretValue
+        } else {
+            Write-Warning "  Could not retrieve value for secret $SecretName"
+            return "PLACEHOLDER_VALUE"
+        }
+    } catch {
+        Write-Warning "  Error retrieving secret value for $SecretName: $_"
+        return "PLACEHOLDER_VALUE"
+    }
+}
+
+function Get-Variable-Value {
+    param($VariableName, $SourceType, $EnvName = "")
+    
+    # Set SOURCE_PAT for GitHub CLI operations
+    $env:GH_TOKEN = $SourcePAT
+    
+    try {
+        $variableValue = ""
+        switch ($SourceType) {
+            "repo" {
+                $variableValue = gh variable get $VariableName --repo "$SourceOrg/$SourceRepo" 
+            }
+            "env" {
+                $variableValue = gh variable get $VariableName --repo "$SourceOrg/$SourceRepo" --env $EnvName
+            }
+            "org" {
+                $variableValue = gh variable get $VariableName --org "$SourceOrg"
+            }
+        }
+        
+        if ($variableValue) {
+            Write-Host "  Retrieved value for variable $VariableName"
+            return $variableValue
+        } else {
+            Write-Warning "  Could not retrieve value for variable $VariableName"
+            return "PLACEHOLDER_VALUE"
+        }
+    } catch {
+        Write-Warning "  Error retrieving variable value for $VariableName: $_"
+        return "PLACEHOLDER_VALUE"
     }
 }
 
@@ -49,9 +136,12 @@ function Migrate-ActionsRepoSecrets {
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-action secret $n"; continue }
         Write-Host "Copying repo-action secret $n"
         
+        # Get secret value from source
+        $value = Get-Secret-Value -SecretName $n -SourceType "repo"
+        
         # Use TARGET_PAT for GitHub CLI operations
         $env:GH_TOKEN = $TargetPAT
-        echo "PLACEHOLDER_VALUE" | gh secret set $n --repo "$TargetOrg/$TargetRepo"
+        echo $value | gh secret set $n --repo "$TargetOrg/$TargetRepo"
     }
 }
 
@@ -67,9 +157,12 @@ function Migrate-ActionsRepoVariables {
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-action variable $n"; continue }
         Write-Host "Copying repo-action variable $n"
         
+        # Get variable value from source
+        $value = Get-Variable-Value -VariableName $n -SourceType "repo"
+        
         # Use TARGET_PAT for GitHub CLI operations
         $env:GH_TOKEN = $TargetPAT
-        echo "PLACEHOLDER_VALUE" | gh variable set $n --repo "$TargetOrg/$TargetRepo"
+        echo $value | gh variable set $n --repo "$TargetOrg/$TargetRepo"
     }
 }
 
@@ -85,9 +178,12 @@ function Migrate-DependabotRepoSecrets {
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-dependabot secret $n"; continue }
         Write-Host "Copying repo-dependabot secret $n"
         
+        # Get secret value from source
+        $value = Get-Secret-Value -SecretName $n -SourceType "repo-dependabot"
+        
         # Use TARGET_PAT for GitHub CLI operations
         $env:GH_TOKEN = $TargetPAT
-        echo "PLACEHOLDER_VALUE" | gh secret set $n --repo "$TargetOrg/$TargetRepo" --app dependabot
+        echo $value | gh secret set $n --repo "$TargetOrg/$TargetRepo" --app dependabot
     }
 }
 
@@ -103,9 +199,12 @@ function Migrate-CodespacesRepoSecrets {
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-codespaces secret $n"; continue }
         Write-Host "Copying repo-codespaces secret $n"
         
+        # Get secret value from source
+        $value = Get-Secret-Value -SecretName $n -SourceType "repo-codespaces"
+        
         # Use TARGET_PAT for GitHub CLI operations
         $env:GH_TOKEN = $TargetPAT
-        echo "PLACEHOLDER_VALUE" | gh secret set $n --repo "$TargetOrg/$TargetRepo" --app codespaces
+        echo $value | gh secret set $n --repo "$TargetOrg/$TargetRepo" --app codespaces
     }
 }
 
@@ -151,9 +250,12 @@ function Migrate-ActionsEnvSecrets {
             if ($exists -and -not $Force) { Write-Host "  Skipping existing env secret $n"; continue }
             Write-Host "  Copying env secret $n"
             
+            # Get secret value from source
+            $value = Get-Secret-Value -SecretName $n -SourceType "env" -EnvName $e
+            
             # Use TARGET_PAT for GitHub CLI operations
             $env:GH_TOKEN = $TargetPAT
-            echo "PLACEHOLDER_VALUE" | gh secret set $n --repo "$TargetOrg/$TargetRepo" --env $e
+            echo $value | gh secret set $n --repo "$TargetOrg/$TargetRepo" --env $e
         }
     }
 }
@@ -200,9 +302,12 @@ function Migrate-ActionsEnvVariables {
             if ($exists -and -not $Force) { Write-Host "  Skipping existing env var $n"; continue }
             Write-Host "  Copying env var $n"
             
+            # Get variable value from source
+            $value = Get-Variable-Value -VariableName $n -SourceType "env" -EnvName $e
+            
             # Use TARGET_PAT for GitHub CLI operations
             $env:GH_TOKEN = $TargetPAT
-            echo "PLACEHOLDER_VALUE" | gh variable set $n --repo "$TargetOrg/$TargetRepo" --env $e
+            echo $value | gh variable set $n --repo "$TargetOrg/$TargetRepo" --env $e
         }
     }
 }
@@ -219,9 +324,20 @@ function Migrate-ActionsOrgSecrets {
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-action secret $n"; continue }
         Write-Host "Copying org-action secret $n"
         
+        # Get secret value from source
+        $value = Get-Secret-Value -SecretName $n -SourceType "org"
+        
         # Use TARGET_PAT for GitHub CLI operations
         $env:GH_TOKEN = $TargetPAT
-        echo "PLACEHOLDER_VALUE" | gh secret set $n --org "$TargetOrg"
+        
+        # Check if the secret has repository access restrictions
+        if ($sec.selected_repositories_url) {
+            Write-Host "  Secret $n has repository access restrictions, setting with 'private' visibility"
+            echo $value | gh secret set $n --org "$TargetOrg" --visibility "private"
+        } else {
+            Write-Host "  Secret $n is accessible to all repositories"
+            echo $value | gh secret set $n --org "$TargetOrg" --visibility "all"
+        }
     }
 }
 
@@ -237,9 +353,20 @@ function Migrate-ActionsOrgVariables {
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-action variable $n"; continue }
         Write-Host "Copying org-action variable $n"
         
+        # Get variable value from source
+        $value = Get-Variable-Value -VariableName $n -SourceType "org"
+        
         # Use TARGET_PAT for GitHub CLI operations
         $env:GH_TOKEN = $TargetPAT
-        echo "PLACEHOLDER_VALUE" | gh variable set $n --org "$TargetOrg"
+        
+        # Check if the variable has repository access restrictions
+        if ($var.selected_repositories_url) {
+            Write-Host "  Variable $n has repository access restrictions, setting with 'private' visibility"
+            echo $value | gh variable set $n --org "$TargetOrg" --visibility "private"
+        } else {
+            Write-Host "  Variable $n is accessible to all repositories"
+            echo $value | gh variable set $n --org "$TargetOrg" --visibility "all"
+        }
     }
 }
 
@@ -255,9 +382,20 @@ function Migrate-DependabotOrgSecrets {
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-dependabot secret $n"; continue }
         Write-Host "Copying org-dependabot secret $n"
         
+        # Get secret value from source
+        $value = Get-Secret-Value -SecretName $n -SourceType "org-dependabot"
+        
         # Use TARGET_PAT for GitHub CLI operations
         $env:GH_TOKEN = $TargetPAT
-        echo "PLACEHOLDER_VALUE" | gh secret set $n --org "$TargetOrg" --app dependabot
+        
+        # Check if the secret has repository access restrictions
+        if ($sec.selected_repositories_url) {
+            Write-Host "  Secret $n has repository access restrictions, setting with 'private' visibility"
+            echo $value | gh secret set $n --org "$TargetOrg" --app dependabot --visibility "private"
+        } else {
+            Write-Host "  Secret $n is accessible to all repositories"
+            echo $value | gh secret set $n --org "$TargetOrg" --app dependabot --visibility "all"
+        }
     }
 }
 
@@ -273,9 +411,20 @@ function Migrate-CodespacesOrgSecrets {
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-codespaces secret $n"; continue }
         Write-Host "Copying org-codespaces secret $n"
         
+        # Get secret value from source
+        $value = Get-Secret-Value -SecretName $n -SourceType "org-codespaces"
+        
         # Use TARGET_PAT for GitHub CLI operations
         $env:GH_TOKEN = $TargetPAT
-        echo "PLACEHOLDER_VALUE" | gh secret set $n --org "$TargetOrg" --app codespaces
+        
+        # Check if the secret has repository access restrictions
+        if ($sec.selected_repositories_url) {
+            Write-Host "  Secret $n has repository access restrictions, setting with 'private' visibility"
+            echo $value | gh secret set $n --org "$TargetOrg" --app codespaces --visibility "private"
+        } else {
+            Write-Host "  Secret $n is accessible to all repositories"
+            echo $value | gh secret set $n --org "$TargetOrg" --app codespaces --visibility "all"
+        }
     }
 }
 
@@ -317,6 +466,17 @@ Write-Host "Authenticating GitHub CLI with SOURCE_PAT..."
 $env:GH_TOKEN = $SourcePAT
 gh auth status
 
+# Test access to secrets using gh CLI
+Write-Host "Testing access to secrets via GitHub CLI..."
+try {
+    $testResult = gh secret list --repo "$SourceOrg/$SourceRepo"
+    Write-Host "Successfully accessed secrets via GitHub CLI"
+} catch {
+    Write-Warning "Warning: Cannot access secrets via GitHub CLI: $_"
+    Write-Host "This script requires gh CLI with the ability to read secrets."
+    Write-Host "Make sure your PAT has the necessary permissions and you're using a self-hosted runner."
+}
+
 foreach ($t in $Scope.Split(',')) {
     $trimmedType = $t.Trim().ToLower()
     Write-Host "Processing scope: $trimmedType"
@@ -337,5 +497,12 @@ foreach ($t in $Scope.Split(',')) {
     }
 }
 
+# Clean up temporary directory if it was created
+if (Test-Path $TempSecretDir) {
+    Write-Host "Cleaning up temporary directory..."
+    Remove-Item -Path $TempSecretDir -Recurse -Force
+}
+
 # Reset to SOURCE_PAT at end
 $env:GH_TOKEN = $SourcePAT
+Write-Host "Migration complete!"
