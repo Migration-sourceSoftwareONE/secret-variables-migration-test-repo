@@ -155,30 +155,6 @@ jobs:
             -Scope "all"
 ```
 
-### Step 2: Run the Migration Script
-
-Run the PowerShell script to migrate secrets from source to target repository:
-
-```yaml
-jobs:
-  migrate-secrets:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      - name: Run Migration Script
-        env:
-          GH_TOKEN: ${{ secrets.TARGET_PAT }}
-        run: |
-          pwsh -NoLogo -NoProfile -ExecutionPolicy Bypass -File migration/Migrate-GitHubVariables.ps1 \
-            -SourceOrg "${{ github.event.inputs.source_org }}" \
-            -SourceRepo "${{ github.event.inputs.source_repo }}" \
-            -TargetOrg "${{ github.event.inputs.target_org }}" \
-            -TargetRepo "${{ github.event.inputs.target_repo }}" \
-            -SourcePAT "${{ secrets.SOURCE_PAT }}" \
-            -TargetPAT "${{ secrets.TARGET_PAT }}" \
-            -Scope "all"
-
-```
 ## Understanding the PowerShell Script
 
 The PowerShell script (`Migrate-GitHubVariables.ps1`) performs several key functions:
