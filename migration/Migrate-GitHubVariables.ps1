@@ -36,7 +36,8 @@ function Migrate-ActionsRepoSecrets {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-action secret $n"; continue }
         Write-Host "Copying repo-action secret $n"
-        gh secret set $n --repo "$TargetOrg/$TargetRepo" --body ''
+        # Use echo to provide a placeholder value
+        echo "PLACEHOLDER_VALUE" | gh secret set $n --repo "$TargetOrg/$TargetRepo"
     }
 }
 
@@ -51,7 +52,8 @@ function Migrate-ActionsRepoVariables {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-action variable $n"; continue }
         Write-Host "Copying repo-action variable $n"
-        gh variable set $n --repo "$TargetOrg/$TargetRepo" --body ''
+        # Use echo to provide a placeholder value
+        echo "PLACEHOLDER_VALUE" | gh variable set $n --repo "$TargetOrg/$TargetRepo"
     }
 }
 
@@ -66,7 +68,8 @@ function Migrate-DependabotRepoSecrets {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-dependabot secret $n"; continue }
         Write-Host "Copying repo-dependabot secret $n"
-        gh secret set $n --repo "$TargetOrg/$TargetRepo" --app dependabot --body ''
+        # Use echo to provide a placeholder value
+        echo "PLACEHOLDER_VALUE" | gh secret set $n --repo "$TargetOrg/$TargetRepo" --app dependabot
     }
 }
 
@@ -81,7 +84,8 @@ function Migrate-CodespacesRepoSecrets {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-codespaces secret $n"; continue }
         Write-Host "Copying repo-codespaces secret $n"
-        gh secret set $n --repo "$TargetOrg/$TargetRepo" --app codespaces --body ''
+        # Use echo to provide a placeholder value
+        echo "PLACEHOLDER_VALUE" | gh secret set $n --repo "$TargetOrg/$TargetRepo" --app codespaces
     }
 }
 
@@ -103,7 +107,8 @@ function Migrate-ActionsEnvSecrets {
             $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
             if ($exists -and -not $Force) { Write-Host "  Skipping existing env secret $n"; continue }
             Write-Host "  Copying env secret $n"
-            gh secret set $n --repo "$TargetOrg/$TargetRepo" --env $e --body ''
+            # Use echo to provide a placeholder value
+            echo "PLACEHOLDER_VALUE" | gh secret set $n --repo "$TargetOrg/$TargetRepo" --env $e
         }
     }
 }
@@ -126,7 +131,8 @@ function Migrate-ActionsEnvVariables {
             $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
             if ($exists -and -not $Force) { Write-Host "  Skipping existing env var $n"; continue }
             Write-Host "  Copying env var $n"
-            gh variable set $n --repo "$TargetOrg/$TargetRepo" --env $e --body ""
+            # Use echo to provide a placeholder value
+            echo "PLACEHOLDER_VALUE" | gh variable set $n --repo "$TargetOrg/$TargetRepo" --env $e
         }
     }
 }
@@ -142,7 +148,8 @@ function Migrate-ActionsOrgSecrets {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-action secret $n"; continue }
         Write-Host "Copying org-action secret $n"
-        gh secret set $n --org "$TargetOrg" --body ''
+        # Use echo to provide a placeholder value
+        echo "PLACEHOLDER_VALUE" | gh secret set $n --org "$TargetOrg"
     }
 }
 
@@ -157,7 +164,8 @@ function Migrate-ActionsOrgVariables {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-action variable $n"; continue }
         Write-Host "Copying org-action variable $n"
-        gh variable set $n --org "$TargetOrg" --body 'PLACEHOLDER_VALUE'
+        # Use echo to provide a placeholder value
+        echo "PLACEHOLDER_VALUE" | gh variable set $n --org "$TargetOrg"
     }
 }
 
@@ -172,7 +180,8 @@ function Migrate-DependabotOrgSecrets {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-dependabot secret $n"; continue }
         Write-Host "Copying org-dependabot secret $n"
-        gh secret set $n --org "$TargetOrg" --app dependabot --body ''
+        # Use echo to provide a placeholder value
+        echo "PLACEHOLDER_VALUE" | gh secret set $n --org "$TargetOrg" --app dependabot
     }
 }
 
@@ -187,9 +196,15 @@ function Migrate-CodespacesOrgSecrets {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-codespaces secret $n"; continue }
         Write-Host "Copying org-codespaces secret $n"
-        gh secret set $n --org "$TargetOrg" --app codespaces --body ''
+        # Use echo to provide a placeholder value
+        echo "PLACEHOLDER_VALUE" | gh secret set $n --org "$TargetOrg" --app codespaces
     }
 }
+
+# Make sure GitHub CLI is authenticated
+Write-Host "Authenticating GitHub CLI with SOURCE_PAT..."
+$env:GH_TOKEN = $SourcePAT
+gh auth status
 
 foreach ($t in $Scope.Split(',')) {
     switch ($t.Trim().ToLower()) {
@@ -203,6 +218,7 @@ foreach ($t in $Scope.Split(',')) {
         'actionsorgvariables'   { Migrate-ActionsOrgVariables }
         'dependabotorgsecrets'  { Migrate-DependabotOrgSecrets }
         'codespacesorgsecrets'  { Migrate-CodespacesOrgSecrets }
-        default { Write-Warning "Unknown type: $t" }
+        'actionsenvironments'   { Write-Host "== Creating Environments == (Not implemented yet)" }
+        default                 { Write-Warning "Unknown type: $t" }
     }
 }
