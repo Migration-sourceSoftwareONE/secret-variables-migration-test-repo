@@ -86,7 +86,7 @@ function Get-Secret-Value {
             return "PLACEHOLDER_VALUE"
         }
     } catch {
-        Write-Warning "  Error retrieving secret value for $SecretName: $_"
+        Write-Warning "  Error retrieving secret value for ${SecretName}: $($_.Exception.Message)"
         return "PLACEHOLDER_VALUE"
     }
 }
@@ -119,7 +119,7 @@ function Get-Variable-Value {
             return "PLACEHOLDER_VALUE"
         }
     } catch {
-        Write-Warning "  Error retrieving variable value for $VariableName: $_"
+        Write-Warning "  Error retrieving variable value for ${VariableName}: $($_.Exception.Message)"
         return "PLACEHOLDER_VALUE"
     }
 }
@@ -472,7 +472,7 @@ try {
     $testResult = gh secret list --repo "$SourceOrg/$SourceRepo"
     Write-Host "Successfully accessed secrets via GitHub CLI"
 } catch {
-    Write-Warning "Warning: Cannot access secrets via GitHub CLI: $_"
+    Write-Warning "Warning: Cannot access secrets via GitHub CLI: $($_.Exception.Message)"
     Write-Host "This script requires gh CLI with the ability to read secrets."
     Write-Host "Make sure your PAT has the necessary permissions and you're using a self-hosted runner."
 }
@@ -493,7 +493,7 @@ foreach ($t in $Scope.Split(',')) {
         'dependabotorgsecrets'  { Migrate-DependabotOrgSecrets }
         'codespacesorgsecrets'  { Migrate-CodespacesOrgSecrets }
         'actionsenvironments'   { Migrate-ActionsEnvironments }
-        default                 { Write-Warning "Unknown type: $t" }
+        default                 { Write-Warning "Unknown type: $trimmedType" }
     }
 }
 
