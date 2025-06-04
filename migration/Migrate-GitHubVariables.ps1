@@ -31,6 +31,7 @@ function Invoke-GitHubApi {
         # Suppress 404 for existence checks; warn otherwise
         if ($_.Exception.Response.StatusCode.value__ -ne 404) {
             Write-Warning "API call failed: $($_.Exception.Message) [$Method $Uri]"
+            Write-Warning "Response: $($_.ErrorDetails.Message)"
         }
         return $null
     }
@@ -47,7 +48,9 @@ function Migrate-ActionsRepoSecrets {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-action secret $n"; continue }
         Write-Host "Copying repo-action secret $n"
-        # Use echo to provide a placeholder value
+        
+        # Use TARGET_PAT for GitHub CLI operations
+        $env:GH_TOKEN = $TargetPAT
         echo "PLACEHOLDER_VALUE" | gh secret set $n --repo "$TargetOrg/$TargetRepo"
     }
 }
@@ -63,7 +66,9 @@ function Migrate-ActionsRepoVariables {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-action variable $n"; continue }
         Write-Host "Copying repo-action variable $n"
-        # Use echo to provide a placeholder value
+        
+        # Use TARGET_PAT for GitHub CLI operations
+        $env:GH_TOKEN = $TargetPAT
         echo "PLACEHOLDER_VALUE" | gh variable set $n --repo "$TargetOrg/$TargetRepo"
     }
 }
@@ -79,7 +84,9 @@ function Migrate-DependabotRepoSecrets {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-dependabot secret $n"; continue }
         Write-Host "Copying repo-dependabot secret $n"
-        # Use echo to provide a placeholder value
+        
+        # Use TARGET_PAT for GitHub CLI operations
+        $env:GH_TOKEN = $TargetPAT
         echo "PLACEHOLDER_VALUE" | gh secret set $n --repo "$TargetOrg/$TargetRepo" --app dependabot
     }
 }
@@ -95,7 +102,9 @@ function Migrate-CodespacesRepoSecrets {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing repo-codespaces secret $n"; continue }
         Write-Host "Copying repo-codespaces secret $n"
-        # Use echo to provide a placeholder value
+        
+        # Use TARGET_PAT for GitHub CLI operations
+        $env:GH_TOKEN = $TargetPAT
         echo "PLACEHOLDER_VALUE" | gh secret set $n --repo "$TargetOrg/$TargetRepo" --app codespaces
     }
 }
@@ -106,9 +115,32 @@ function Migrate-ActionsEnvSecrets {
     if (-not $repoInfo) { return }
     $repoId = $repoInfo.id
     $envs = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments" $SourcePAT
+    if (-not $envs) { 
+        Write-Host "No environments found in source repository"
+        return 
+    }
+    
     foreach ($env in $envs.environments) {
         $e = $env.name
         Write-Host " Environment: $e"
+        
+        # Check if environment exists in target repo, create if not
+        $targetEnvCheck = Invoke-GitHubApi GET "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e" $TargetPAT
+        if (-not $targetEnvCheck) {
+            Write-Host "  Environment $e doesn't exist in target repo, creating it first"
+            # Creating environment via API isn't straightforward, we'll need to create a secret to implicitly create the environment
+            $tempSecretName = "TEMP_ENV_CREATION_SECRET_$(Get-Random)"
+            
+            # Use TARGET_PAT for GitHub CLI operations
+            $env:GH_TOKEN = $TargetPAT
+            echo "delete_me" | gh secret set $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
+            Write-Host "  Created environment $e in target repo"
+            
+            # Delete the temporary secret
+            gh secret delete $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
+            Write-Host "  Removed temporary secret from environment"
+        }
+        
         $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/secrets"
         $tUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e/secrets"
         $src = Invoke-GitHubApi GET $sUri $SourcePAT
@@ -118,7 +150,9 @@ function Migrate-ActionsEnvSecrets {
             $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
             if ($exists -and -not $Force) { Write-Host "  Skipping existing env secret $n"; continue }
             Write-Host "  Copying env secret $n"
-            # Use echo to provide a placeholder value
+            
+            # Use TARGET_PAT for GitHub CLI operations
+            $env:GH_TOKEN = $TargetPAT
             echo "PLACEHOLDER_VALUE" | gh secret set $n --repo "$TargetOrg/$TargetRepo" --env $e
         }
     }
@@ -130,9 +164,32 @@ function Migrate-ActionsEnvVariables {
     if (-not $repoInfo) { return }
     $repoId = $repoInfo.id
     $envs = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments" $SourcePAT
+    if (-not $envs) { 
+        Write-Host "No environments found in source repository"
+        return 
+    }
+    
     foreach ($env in $envs.environments) {
         $e = $env.name
         Write-Host " Environment: $e"
+        
+        # Check if environment exists in target repo, create if not
+        $targetEnvCheck = Invoke-GitHubApi GET "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e" $TargetPAT
+        if (-not $targetEnvCheck) {
+            Write-Host "  Environment $e doesn't exist in target repo, creating it first"
+            # Creating environment via API isn't straightforward, we'll need to create a secret to implicitly create the environment
+            $tempSecretName = "TEMP_ENV_CREATION_SECRET_$(Get-Random)"
+            
+            # Use TARGET_PAT for GitHub CLI operations
+            $env:GH_TOKEN = $TargetPAT
+            echo "delete_me" | gh secret set $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
+            Write-Host "  Created environment $e in target repo"
+            
+            # Delete the temporary secret
+            gh secret delete $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
+            Write-Host "  Removed temporary secret from environment"
+        }
+        
         $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/variables"
         $tUri = "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e/variables"
         $src = Invoke-GitHubApi GET $sUri $SourcePAT
@@ -142,7 +199,9 @@ function Migrate-ActionsEnvVariables {
             $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
             if ($exists -and -not $Force) { Write-Host "  Skipping existing env var $n"; continue }
             Write-Host "  Copying env var $n"
-            # Use echo to provide a placeholder value
+            
+            # Use TARGET_PAT for GitHub CLI operations
+            $env:GH_TOKEN = $TargetPAT
             echo "PLACEHOLDER_VALUE" | gh variable set $n --repo "$TargetOrg/$TargetRepo" --env $e
         }
     }
@@ -159,7 +218,9 @@ function Migrate-ActionsOrgSecrets {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-action secret $n"; continue }
         Write-Host "Copying org-action secret $n"
-        # Use echo to provide a placeholder value
+        
+        # Use TARGET_PAT for GitHub CLI operations
+        $env:GH_TOKEN = $TargetPAT
         echo "PLACEHOLDER_VALUE" | gh secret set $n --org "$TargetOrg"
     }
 }
@@ -175,7 +236,9 @@ function Migrate-ActionsOrgVariables {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-action variable $n"; continue }
         Write-Host "Copying org-action variable $n"
-        # Use echo to provide a placeholder value
+        
+        # Use TARGET_PAT for GitHub CLI operations
+        $env:GH_TOKEN = $TargetPAT
         echo "PLACEHOLDER_VALUE" | gh variable set $n --org "$TargetOrg"
     }
 }
@@ -191,7 +254,9 @@ function Migrate-DependabotOrgSecrets {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-dependabot secret $n"; continue }
         Write-Host "Copying org-dependabot secret $n"
-        # Use echo to provide a placeholder value
+        
+        # Use TARGET_PAT for GitHub CLI operations
+        $env:GH_TOKEN = $TargetPAT
         echo "PLACEHOLDER_VALUE" | gh secret set $n --org "$TargetOrg" --app dependabot
     }
 }
@@ -207,18 +272,56 @@ function Migrate-CodespacesOrgSecrets {
         $exists = Invoke-GitHubApi GET "$tUri/$n" $TargetPAT
         if ($exists -and -not $Force) { Write-Host "Skipping existing org-codespaces secret $n"; continue }
         Write-Host "Copying org-codespaces secret $n"
-        # Use echo to provide a placeholder value
+        
+        # Use TARGET_PAT for GitHub CLI operations
+        $env:GH_TOKEN = $TargetPAT
         echo "PLACEHOLDER_VALUE" | gh secret set $n --org "$TargetOrg" --app codespaces
     }
 }
 
-# Make sure GitHub CLI is authenticated
+function Migrate-ActionsEnvironments {
+    Write-Host "== Creating Environments =="
+    $envs = Invoke-GitHubApi GET "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments" $SourcePAT
+    if (-not $envs) { 
+        Write-Host "No environments found in source repository"
+        return 
+    }
+    
+    foreach ($env in $envs.environments) {
+        $e = $env.name
+        Write-Host " Creating Environment: $e"
+        
+        # Check if environment exists in target repo, create if not
+        $targetEnvCheck = Invoke-GitHubApi GET "https://api.github.com/repos/$TargetOrg/$TargetRepo/environments/$e" $TargetPAT
+        if (-not $targetEnvCheck) {
+            Write-Host "  Environment $e doesn't exist in target repo, creating it"
+            # Creating environment via API isn't straightforward, we'll need to create a secret to implicitly create the environment
+            $tempSecretName = "TEMP_ENV_CREATION_SECRET_$(Get-Random)"
+            
+            # Use TARGET_PAT for GitHub CLI operations
+            $env:GH_TOKEN = $TargetPAT
+            echo "delete_me" | gh secret set $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
+            Write-Host "  Created environment $e in target repo"
+            
+            # Delete the temporary secret
+            gh secret delete $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
+            Write-Host "  Removed temporary secret from environment"
+        } else {
+            Write-Host "  Environment $e already exists in target repo"
+        }
+    }
+}
+
+# Make sure GitHub CLI is authenticated initially with SOURCE_PAT
 Write-Host "Authenticating GitHub CLI with SOURCE_PAT..."
 $env:GH_TOKEN = $SourcePAT
 gh auth status
 
 foreach ($t in $Scope.Split(',')) {
-    switch ($t.Trim().ToLower()) {
+    $trimmedType = $t.Trim().ToLower()
+    Write-Host "Processing scope: $trimmedType"
+    
+    switch ($trimmedType) {
         'actionsreposecrets'    { Migrate-ActionsRepoSecrets }
         'actionsrepovariables'  { Migrate-ActionsRepoVariables }
         'dependabotreposecrets' { Migrate-DependabotRepoSecrets }
@@ -229,7 +332,10 @@ foreach ($t in $Scope.Split(',')) {
         'actionsorgvariables'   { Migrate-ActionsOrgVariables }
         'dependabotorgsecrets'  { Migrate-DependabotOrgSecrets }
         'codespacesorgsecrets'  { Migrate-CodespacesOrgSecrets }
-        'actionsenvironments'   { Write-Host "== Creating Environments == (Not implemented yet)" }
+        'actionsenvironments'   { Migrate-ActionsEnvironments }
         default                 { Write-Warning "Unknown type: $t" }
     }
 }
+
+# Reset to SOURCE_PAT at end
+$env:GH_TOKEN = $SourcePAT
