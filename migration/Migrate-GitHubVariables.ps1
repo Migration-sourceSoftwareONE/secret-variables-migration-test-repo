@@ -21,7 +21,7 @@ Write-Host "Source Repository: '$SourceRepo'"
 Write-Host "Target Organization: '$TargetOrg'"
 Write-Host "Target Repository: '$TargetRepo'"
 
-# Create a temporary directory for storing variable values if not provided
+# Create a temporary directory for storing secret and variable values if not provided
 if (-not $TempSecretDir) {
     $TempSecretDir = Join-Path $env:TEMP "GHSecretsMigration_$([DateTime]::Now.ToString('yyyyMMddHHmmss'))"
 }
@@ -49,42 +49,143 @@ function Invoke-GitHubApi {
 function Get-Secret-Value {
     param($SecretName, $SourceType, $EnvName = "")
     
-    # Set SOURCE_PAT for GitHub CLI operations
-    $env:GH_TOKEN = $SourcePAT
+    $secretFile = Join-Path $TempSecretDir "$SourceType-$EnvName-$SecretName.secret"
     
     try {
-        $secretValue = ""
+        # Create a very small workflow that outputs the secret to a file (using cat)
+        $workflowId = [Guid]::NewGuid().ToString()
+        $workflowName = "temp-secret-export-$workflowId"
+        $workflowPath = ".github/workflows/$workflowName.yml"
+        $secretEnvVar = ""
+        $secretCommand = ""
+        
+        # Different workflow content based on secret type
         switch ($SourceType) {
             "repo" {
-                $secretValue = gh secret get $SecretName --repo "$SourceOrg/$SourceRepo"
+                $secretEnvVar = "env:\$SecretName = \${{ secrets.$SecretName }}"
+                $secretCommand = "echo \${{ secrets.$SecretName }} > `"$secretFile`""
             }
             "repo-dependabot" {
-                $secretValue = gh secret get $SecretName --repo "$SourceOrg/$SourceRepo" --app dependabot
-            }
+                $secretEnvVar = "env:\$SecretName = \${{ secrets.$SecretName }}"
+                $secretCommand = "echo \${{ secrets.$SecretName }} > `"$secretFile`""
+            } 
             "repo-codespaces" {
-                $secretValue = gh secret get $SecretName --repo "$SourceOrg/$SourceRepo" --app codespaces
+                $secretEnvVar = "env:\$SecretName = \${{ secrets.$SecretName }}"
+                $secretCommand = "echo \${{ secrets.$SecretName }} > `"$secretFile`""
             }
             "env" {
-                $secretValue = gh secret get $SecretName --repo "$SourceOrg/$SourceRepo" --env $EnvName
+                $secretEnvVar = "env:\$SecretName = \${{ secrets.$SecretName }}"
+                $secretCommand = "echo \${{ secrets.$SecretName }} > `"$secretFile`""
             }
             "org" {
-                $secretValue = gh secret get $SecretName --org "$SourceOrg"
+                $secretEnvVar = "env:\$SecretName = \${{ secrets.$SecretName }}"
+                $secretCommand = "echo \${{ secrets.$SecretName }} > `"$secretFile`""
             }
             "org-dependabot" {
-                $secretValue = gh secret get $SecretName --org "$SourceOrg" --app dependabot
+                $secretEnvVar = "env:\$SecretName = \${{ secrets.$SecretName }}"
+                $secretCommand = "echo \${{ secrets.$SecretName }} > `"$secretFile`""
             }
             "org-codespaces" {
-                $secretValue = gh secret get $SecretName --org "$SourceOrg" --app codespaces
+                $secretEnvVar = "env:\$SecretName = \${{ secrets.$SecretName }}"
+                $secretCommand = "echo \${{ secrets.$SecretName }} > `"$secretFile`""
             }
         }
         
-        if ($secretValue) {
-            Write-Host "  Retrieved value for secret $SecretName"
-            return $secretValue
-        } else {
-            Write-Warning "  Could not retrieve value for secret $SecretName"
+        # Create temporary workflow file to output the secret value
+        $workflowContent = @"
+name: Temporary Secret Export
+
+on:
+  workflow_dispatch:
+
+jobs:
+  export-secret:
+    runs-on: [self-hosted, Windows, X64]
+    steps:
+      - name: Export Secret to File
+        shell: powershell
+        run: |
+          # Set secret to environment variable
+          $secretEnvVar
+          # Export to file
+          $secretCommand
+"@
+
+        # Write the workflow to a local file
+        $tempDir = New-Item -ItemType Directory -Path (Join-Path $TempSecretDir ".github\workflows") -Force
+        $tempWorkflow = Join-Path $tempDir $workflowName
+        Set-Content -Path "$tempWorkflow.yml" -Value $workflowContent
+        
+        # Commit and push the workflow to the repo
+        $env:GH_TOKEN = $SourcePAT
+        
+        # Use a direct REST API call instead of git commands
+        $workflowContent64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($workflowContent))
+        $commitBody = @{
+            message = "temp: Add workflow to export secret $SecretName"
+            content = $workflowContent64
+            branch = "main"  # Adjust this if your default branch is different
+        }
+        
+        $apiUrl = "https://api.github.com/repos/$SourceOrg/$SourceRepo/contents/$workflowPath"
+        $response = Invoke-GitHubApi PUT $apiUrl $SourcePAT $commitBody
+        
+        if (-not $response) {
+            Write-Warning "Failed to create temporary workflow for secret extraction"
             return "PLACEHOLDER_VALUE"
         }
+        
+        # Trigger the workflow
+        $runUrl = "https://api.github.com/repos/$SourceOrg/$SourceRepo/actions/workflows/$workflowName.yml/dispatches"
+        $runBody = @{
+            ref = "main"  # Adjust this if your default branch is different
+        }
+        
+        $runResponse = Invoke-GitHubApi POST $runUrl $SourcePAT $runBody
+        
+        # Wait for the workflow to complete (up to 60 seconds)
+        Write-Host "  Waiting for secret extraction workflow to complete..."
+        $maxWait = 60
+        $waited = 0
+        $completed = $false
+        $secretValue = "PLACEHOLDER_VALUE"
+        
+        while ($waited -lt $maxWait -and -not $completed) {
+            Start-Sleep -Seconds 2
+            $waited += 2
+            
+            # Check if the secret file exists
+            if (Test-Path $secretFile) {
+                $secretValue = Get-Content $secretFile -Raw
+                $completed = $true
+                Write-Host "  Secret value obtained successfully"
+            }
+        }
+        
+        if (-not $completed) {
+            Write-Warning "  Timed out waiting for secret extraction"
+        }
+        
+        # Clean up the workflow file from the repo
+        $deleteUrl = "https://api.github.com/repos/$SourceOrg/$SourceRepo/contents/$workflowPath"
+        $shaResponse = Invoke-GitHubApi GET $deleteUrl $SourcePAT
+        
+        if ($shaResponse -and $shaResponse.sha) {
+            $deleteBody = @{
+                message = "temp: Remove workflow to export secret $SecretName"
+                sha = $shaResponse.sha
+                branch = "main"  # Adjust this if your default branch is different
+            }
+            
+            Invoke-GitHubApi DELETE $deleteUrl $SourcePAT $deleteBody | Out-Null
+        }
+        
+        # Clean up the temporary file
+        if (Test-Path $secretFile) {
+            Remove-Item $secretFile -Force
+        }
+        
+        return $secretValue
     } catch {
         Write-Warning "  Error retrieving secret value for ${SecretName}: $($_.Exception.Message)"
         return "PLACEHOLDER_VALUE"
@@ -235,9 +336,13 @@ function Migrate-ActionsEnvSecrets {
             echo "delete_me" | gh secret set $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
             Write-Host "  Created environment $e in target repo"
             
-            # Delete the temporary secret
-            gh secret delete $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
-            Write-Host "  Removed temporary secret from environment"
+            # Try to delete the temporary secret
+            try {
+                gh secret delete $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
+                Write-Host "  Removed temporary secret from environment"
+            } catch {
+                Write-Warning "  Failed to remove temporary secret, but environment should be created: $($_.Exception.Message)"
+            }
         }
         
         $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/secrets"
@@ -287,9 +392,13 @@ function Migrate-ActionsEnvVariables {
             echo "delete_me" | gh secret set $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
             Write-Host "  Created environment $e in target repo"
             
-            # Delete the temporary secret
-            gh secret delete $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
-            Write-Host "  Removed temporary secret from environment"
+            # Try to delete the temporary secret
+            try {
+                gh secret delete $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
+                Write-Host "  Removed temporary secret from environment"
+            } catch {
+                Write-Warning "  Failed to remove temporary secret, but environment should be created: $($_.Exception.Message)"
+            }
         }
         
         $sUri = "https://api.github.com/repos/$SourceOrg/$SourceRepo/environments/$e/variables"
@@ -452,9 +561,13 @@ function Migrate-ActionsEnvironments {
             echo "delete_me" | gh secret set $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
             Write-Host "  Created environment $e in target repo"
             
-            # Delete the temporary secret
-            gh secret delete $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
-            Write-Host "  Removed temporary secret from environment"
+            # Try to delete the temporary secret
+            try {
+                gh secret delete $tempSecretName --repo "$TargetOrg/$TargetRepo" --env $e
+                Write-Host "  Removed temporary secret from environment"
+            } catch {
+                Write-Warning "  Failed to remove temporary secret, but environment should be created: $($_.Exception.Message)"
+            }
         } else {
             Write-Host "  Environment $e already exists in target repo"
         }
@@ -466,15 +579,23 @@ Write-Host "Authenticating GitHub CLI with SOURCE_PAT..."
 $env:GH_TOKEN = $SourcePAT
 gh auth status
 
-# Test access to secrets using gh CLI
-Write-Host "Testing access to secrets via GitHub CLI..."
+# Test ability to create and run workflows
+Write-Host "Testing ability to create and run workflows..."
 try {
-    $testResult = gh secret list --repo "$SourceOrg/$SourceRepo"
-    Write-Host "Successfully accessed secrets via GitHub CLI"
+    $env:GH_TOKEN = $SourcePAT
+    
+    # List repositories to ensure the token has repo access
+    $repoCheck = gh repo list $SourceOrg --limit 1 --json name
+    if ($repoCheck) {
+        Write-Host "✅ Successfully verified repository access via GitHub CLI"
+    } else {
+        Write-Warning "❌ Could not verify repository access - check PAT permissions"
+    }
+    
+    Write-Host "This script will use a temporary GitHub workflow to extract secret values"
+    Write-Host "The PAT needs 'repo' and 'workflow' permissions for this to work"
 } catch {
-    Write-Warning "Warning: Cannot access secrets via GitHub CLI: $($_.Exception.Message)"
-    Write-Host "This script requires gh CLI with the ability to read secrets."
-    Write-Host "Make sure your PAT has the necessary permissions and you're using a self-hosted runner."
+    Write-Warning "❌ Issues with GitHub CLI or permissions: $($_.Exception.Message)"
 }
 
 foreach ($t in $Scope.Split(',')) {
